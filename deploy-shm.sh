@@ -93,7 +93,7 @@ chown $APP_USER:www-data $WEB_ROOT/test.php
 # Restart web services
 log "Restarting web services..."
 systemctl restart nginx
-systemctl restart php8.1-fpm
+systemctl restart php8.4-fpm
 
 # Display deployment information
 log "SHM Panel Deployment Completed!"
