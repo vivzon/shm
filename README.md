@@ -1,119 +1,311 @@
-# SHM - Server Hosting Management Panel
-- install PHP 8.4, Nginx, MySQL
-- set up your project files under /var/www/shm-panel
-- configure permissions and database
-- run the app securely
+# 🖥️ SHM — Server Hosting Management Panel
 
-# Step 1 — Update the system
-  apt update && apt upgrade -y
+The **SHM Panel** is a lightweight web-based control panel for managing servers, hosting environments, and PHP-based applications.  
+This guide walks you through installing and configuring SHM on an Ubuntu-based server using **PHP 8.4**, **Nginx**, and **MySQL**.
 
-# Step 2 — Install required packages
-  apt install -y nginx mysql-server unzip git curl openssl
+---
 
-# Step 3 — Install PHP 8.4 and extensions
-  add-apt-repository ppa:ondrej/php -y
-  apt update
-  apt install -y php8.4 php8.4-fpm php8.4-mysql php8.4-cli php8.4-curl php8.4-zip php8.4-mbstring php8.4-xml php8.4-gd php8.4-bcmath
+## 📋 Requirements
 
-  # Enable and start PHP-FPM:
-    systemctl enable php8.4-fpm
-    systemctl start php8.4-fpm
+- Ubuntu 22.04+ (or compatible Debian-based distro)
+- Root or sudo privileges
+- Internet access
+- Domain name (e.g., `server.sellvell.com`)
 
-# Step 4 — Prepare web root
-  mkdir -p /var/www/shm-panel
-  cd /var/www/shm-panel
-  
-  # Go to your web directory
-    cd /var/www/
-  
-  # Clone the GitHub project
-    git clone https://github.com/vivzon/shm.git shm-panel
-  
-  # Verify files
-    ls -l /var/www/shm-panel/
+---
 
-  # ptionally set permissions
-    If this is for a web panel (PHP, Node.js, etc.), fix permissions:
+## 🚀 Installation Steps
 
-    chown -R www-data:www-data /var/www/shm-panel/
-    chmod -R 755 /var/www/shm-panel/
+### **Step 1 — Update the System**
 
-# Step 5 — Create the SHM application user
-  useradd -r -s /bin/false shmuser
+```bash
+sudo apt update && sudo apt upgrade -y
+```
 
-# Step 6 — Create the deployment script
-  # executable:
-  chmod +x /var/www/shm-panel/deploy-shm.sh
-    
-  # Run it:
-    /var/www/shm-panel/deploy-shm.sh or ./deploy-shm.sh
+---
 
-# It will: 
-  ✅ create /var/www/shm-panel/includes/config.php
-  ✅ set permissions
-  ✅ create the MySQL database and user
-  ✅ restart services
+### **Step 2 — Install Required Packages**
 
-# Step 7 — Configure Nginx
-  Create /etc/nginx/sites-available/shm-panel.conf:
+```bash
+sudo apt install -y nginx mysql-server unzip git curl openssl
+```
 
-  server {
-      listen 80;
-      server_name _;
-  
-      root /var/www/shm-panel;
-      index index.php index.html;
-  
-      access_log /var/log/nginx/shm-panel.access.log;
-      error_log /var/log/nginx/shm-panel.error.log;
-  
-      location / {
-          try_files $uri $uri/ /index.php?$query_string;
-      }
-  
-      location ~ \.php$ {
-          include snippets/fastcgi-php.conf;
-          fastcgi_pass unix:/var/run/php/php8.4-fpm.sock;
-          fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
-          include fastcgi_params;
-      }
-  
-      location ~ /\.ht {
-          deny all;
-      }
-  }
+---
 
-# Enable it:
-  ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
-  nginx -t
-  systemctl restart nginx
+### **Step 3 — Install PHP 8.4 and Extensions**
 
-# Step 8 — Test PHP
+```bash
+sudo add-apt-repository ppa:ondrej/php -y
+sudo apt update
 
-  # bash:
-  echo "<?php phpinfo(); ?>" > /var/www/shm-panel/test.php
-  chown www-data:www-data /var/www/shm-panel/test.php
+sudo apt install -y php8.4 php8.4-fpm php8.4-mysql php8.4-cli php8.4-curl php8.4-zip php8.4-mbstring php8.4-xml php8.4-gd php8.4-bcmath
+```
 
-  Visit http://<your-server-ip>/test.php — you should see the PHP 8.4 info page.
-  
-# Then remove it:
-  rm /var/www/shm-panel/test.php
+Enable and start PHP-FPM:
 
-# Step 9 — Finish installation via web
-  http://<your-server-ip>/install/
+```bash
+sudo systemctl enable php8.4-fpm
+sudo systemctl start php8.4-fpm
+```
 
-  Follow the on-screen instructions.
-  Use the credentials printed at the end of your deployment script (or check /root/shm-deployment-info.txt).
+---
 
-# Step 10 — Secure the setup
-  rm -rf /var/www/shm-panel/install
+### **Step 4 — Prepare the Web Root**
 
-  # Optionally install a firewall:
-  ufw allow 'Nginx Full'
-  ufw enable
+```bash
+sudo mkdir -p /var/www/shm-panel
+cd /var/www
+sudo git clone https://github.com/vivzon/shm.git shm-panel
+```
 
-# ✅ Done!
-Your SHM Panel should now be accessible at
-http://<your-server-ip>/
+Verify files:
 
-  
+```bash
+ls -l /var/www/shm-panel/
+```
+
+Fix permissions:
+
+```bash
+sudo chown -R www-data:www-data /var/www/shm-panel/
+sudo chmod -R 755 /var/www/shm-panel/
+```
+
+---
+
+### **Step 5 — Create the SHM Application User**
+
+```bash
+sudo useradd -r -s /bin/false shmuser
+```
+
+---
+
+### **Step 6 — Run the Deployment Script**
+
+Make it executable:
+
+```bash
+sudo chmod +x /var/www/shm-panel/deploy-shm.sh
+```
+
+Run it:
+
+```bash
+sudo /var/www/shm-panel/deploy-shm.sh
+```
+
+This script will:
+- ✅ Create `/var/www/shm-panel/includes/config.php`
+- ✅ Set correct permissions
+- ✅ Create the MySQL database and user
+- ✅ Restart Nginx and PHP-FPM
+
+---
+
+### **Step 7 — Configure Nginx**
+
+Create a new config file:
+
+```bash
+sudo nano /etc/nginx/sites-available/shm-panel.conf
+```
+
+Paste the following:
+
+```nginx
+server {
+    listen 80;
+    server_name server.sellvell.com;
+
+    root /var/www/shm-panel;
+    index index.php index.html;
+
+    access_log /var/log/nginx/shm-panel.access.log;
+    error_log  /var/log/nginx/shm-panel.error.log;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+        try_files $uri =404;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+```
+
+Enable the site and reload Nginx:
+
+```bash
+sudo ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
+---
+
+### **Step 8 — Test PHP**
+
+Create a test file:
+
+```bash
+echo "<?php phpinfo(); ?>" | sudo tee /var/www/shm-panel/test.php
+sudo chown www-data:www-data /var/www/shm-panel/test.php
+```
+
+Open in your browser:
+
+```
+http://<your-server-ip>/test.php
+```
+
+If PHP loads correctly, remove the file:
+
+```bash
+sudo rm /var/www/shm-panel/test.php
+```
+
+---
+
+### **Step 9 — Complete Installation via Web Interface**
+
+Open your browser and go to:
+
+```
+http://<your-server-ip>/install/
+```
+
+Follow the on-screen installation wizard.  
+Use the credentials displayed by the deployment script or check:
+
+```
+/root/shm-deployment-info.txt
+```
+
+---
+
+### **Step 10 — Secure the Installation**
+
+Remove the installer folder:
+
+```bash
+sudo rm -rf /var/www/shm-panel/install
+```
+
+Enable and configure the firewall:
+
+```bash
+sudo ufw allow 'Nginx Full'
+sudo ufw enable
+```
+
+(Optional) Enable HTTPS with Let’s Encrypt:
+
+```bash
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d server.sellvell.com
+```
+
+---
+
+## 🔒 Security Recommendations
+
+- Regularly update your system:
+  ```bash
+  sudo apt update && sudo apt upgrade -y
+  ```
+- Disable MySQL remote root login:
+  ```bash
+  sudo mysql_secure_installation
+  ```
+- Backup `/var/www/shm-panel/includes/config.php` securely.
+- Keep database credentials private.
+- Use HTTPS (SSL) for all panel access.
+
+---
+
+## 🧠 Useful Commands
+
+Restart services:
+
+```bash
+sudo systemctl restart nginx
+sudo systemctl restart php8.4-fpm
+sudo systemctl restart mysql
+```
+
+Check Nginx syntax:
+
+```bash
+sudo nginx -t
+```
+
+View logs:
+
+```bash
+sudo tail -f /var/log/nginx/shm-panel.error.log
+sudo journalctl -u php8.4-fpm -n 50
+```
+
+---
+
+## 🌐 Access the Panel
+
+Once installation is complete, access your SHM panel at:
+
+- **HTTP:**  [http://server.sellvell.com/](http://server.sellvell.com/)
+- **HTTPS (recommended):**  [https://server.sellvell.com/](https://server.sellvell.com/)
+
+---
+
+## 🧰 Directory Structure
+
+```
+/var/www/shm-panel/
+│
+├── includes/
+│   └── config.php        # Application configuration file
+├── deploy-shm.sh         # Deployment script
+├── install/              # Web-based installer (remove after setup)
+├── public/               # Web-accessible files
+├── logs/                 # Log files
+└── ...
+```
+
+---
+
+## 📦 Backup & Maintenance
+
+Backup database and config regularly:
+
+```bash
+sudo mysqldump -u root -p shm_db > /root/shm-backup.sql
+sudo tar -czvf /root/shm-files-backup.tar.gz /var/www/shm-panel
+```
+
+To restore:
+
+```bash
+sudo mysql -u root -p shm_db < /root/shm-backup.sql
+sudo tar -xzvf /root/shm-files-backup.tar.gz -C /
+```
+
+---
+
+## ✅ Done!
+
+Your **SHM Server Hosting Management Panel** is now fully installed and ready to use 🎉  
+Manage your hosting environment securely and efficiently.
+
+---
+
+### 🧩 Author
+**SHM Development Team (Vivzon Technologies)**  
+📧 Support: support@vivzon.com  
+🌐 Website: [https://vivzon.com](https://vivzon.com)
