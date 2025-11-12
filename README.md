@@ -1,4 +1,4 @@
-# shm
+# SHM - Server Hosting Management Panel
 - install PHP 8.4, Nginx, MySQL
 - set up your project files under /var/www/shm-panel
 - configure permissions and database
