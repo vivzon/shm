@@ -115,14 +115,16 @@ Paste the following:
 
 ```nginx
 server {
-    listen 80;
-    server_name server.sellvell.com;
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name 147.79.71.199 server.sellvell.com;
 
     root /var/www/shm-panel;
     index index.php index.html;
 
-    access_log /var/log/nginx/shm-panel.access.log;
-    error_log  /var/log/nginx/shm-panel.error.log;
+    access_log /var/log/nginx/shm_access.log;
+    error_log  /var/log/nginx/shm_error.log;
 
     location / {
         try_files $uri $uri/ /index.php?$query_string;
@@ -130,12 +132,13 @@ server {
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
-        try_files $uri =404;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;  # <- change if your socket is different
     }
 
-    location ~ /\.ht {
-        deny all;
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|webp)$ {
+        try_files $uri $uri/ =404;
+        access_log off;
+        expires max;
     }
 }
 ```
@@ -144,6 +147,11 @@ Enable the site and reload Nginx:
 
 ```bash
 sudo ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
+
+or
+
+sudo ln -sf /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/shm-panel.conf
+
 sudo nginx -t
 sudo systemctl restart nginx
 ```
