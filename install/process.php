@@ -37,7 +37,7 @@ try {
     $pdo->exec("USE `$db_name`");
     
     // Read and execute SQL file
-    $sql = file_get_contents('install.sql');
+    $sql = file_get_contents('../install.sql');
     $pdo->exec($sql);
     
     // Create admin user
