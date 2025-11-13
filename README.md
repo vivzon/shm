@@ -146,9 +146,7 @@ server {
 Enable the site and reload Nginx:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
-
-or
+//sudo ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
 
 sudo ln -sf /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/shm-panel.conf
 
