@@ -313,5 +313,5 @@ Manage your hosting environment securely and efficiently.
 
 ### 🧩 Author
 **SHM Development Team (Vivzon Technologies)**  
-📧 Support: support@vivzon.com  
-🌐 Website: [https://vivzon.com](https://vivzon.com)
+📧 Support: info@vivzon.in  
+🌐 Website: [https://vivzon.in](https://vivzon.in)
