@@ -1,6 +1,6 @@
 <?php
 // Check if already installed
-if (file_exists('../includes/config.php')) {
+if (file_exists('../includes/db.php')) {
     header('Location: ../index.php');
     exit;
 }
