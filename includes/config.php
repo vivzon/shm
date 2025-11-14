@@ -1,11 +1,11 @@
 <?php
 // This file will be generated during installation
-if (!file_exists(__DIR__ . '/config.php')) {
+if (!file_exists(__DIR__ . '/db.php')) {
     header('Location: ../install/');
     exit;
 }
 
-require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/db.php';
 
 // Database connection
 try {
