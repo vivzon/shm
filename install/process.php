@@ -2,7 +2,7 @@
 header('Content-Type: application/json');
 
 // Check if already installed
-if (file_exists('../includes/config.php')) {
+if (file_exists('../includes/db.php')) {
     echo json_encode(['success' => false, 'message' => 'System already installed']);
     exit;
 }
@@ -54,7 +54,7 @@ try {
     $config_content .= "define('SITE_URL', 'http://' . \$_SERVER['HTTP_HOST'] . str_replace('/install', '', dirname(\$_SERVER['PHP_SELF'])));\n";
     $config_content .= "?>";
     
-    file_put_contents('../includes/config.php', $config_content);
+    file_put_contents('../includes/db.php', $config_content);
     
     echo json_encode(['success' => true]);
     
