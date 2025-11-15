@@ -96,17 +96,18 @@ sudo /var/www/shm-panel/install.sh
 ```
 
 This script will:
-✔ OS detection
-✔ Full PHP 8.4 + MariaDB + nginx stack installation
-✔ Secure setup
-✔ Panel project structure
-✔ Auto-generated configs
-✔ Full routing system
-✔ Modules (domains, login, dashboard)
-✔ Database schema
-✔ Security features (CSRF, hashed passwords, login attempts)
-✔ Logs, backups, encryption keys
-✔ Service configuration
+
+- OS detection
+- Full PHP 8.4 + MariaDB + nginx stack installation
+- Secure setup
+- Panel project structure
+- Auto-generated configs
+- Full routing system
+- Modules (domains, login, dashboard)
+- Database schema
+- Security features (CSRF, hashed passwords, login attempts)
+- Logs, backups, encryption keys
+- Service configuration
 
 ---
 
