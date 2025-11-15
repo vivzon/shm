@@ -300,7 +300,7 @@ Once installation is complete, access your SHM panel at:
 │
 ├── includes/
 │   └── config.php        # Application configuration file
-├── deploy-shm.sh         # Deployment script
+├── install.sh         # Deployment script
 ├── install/              # Web-based installer (remove after setup)
 ├── public/               # Web-accessible files
 ├── logs/                 # Log files
