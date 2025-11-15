@@ -120,7 +120,7 @@ FLUSH PRIVILEGES;
 ```
 
 Restart services (if needed):
-
+ 
 ```bash
 systemctl restart nginx
 systemctl restart php8.4-fpm
