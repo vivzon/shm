@@ -86,13 +86,13 @@ sudo useradd -r -s /bin/false shmuser
 Make it executable:
 
 ```bash
-sudo chmod +x /var/www/shm-panel/deploy-shm.sh
+sudo chmod +x /var/www/shm-panel/install.sh
 ```
 
 Run it:
 
 ```bash
-sudo /var/www/shm-panel/deploy-shm.sh
+sudo /var/www/shm-panel/install.sh
 ```
 
 This script will:
