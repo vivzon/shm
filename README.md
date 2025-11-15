@@ -96,14 +96,36 @@ sudo /var/www/shm-panel/install.sh
 ```
 
 This script will:
-- ✅ Create `/var/www/shm-panel/includes/config.php`
-- ✅ Set correct permissions
-- ✅ Create the MySQL database and user
-- ✅ Restart Nginx and PHP-FPM
+✔ OS detection
+✔ Full PHP 8.4 + MariaDB + nginx stack installation
+✔ Secure setup
+✔ Panel project structure
+✔ Auto-generated configs
+✔ Full routing system
+✔ Modules (domains, login, dashboard)
+✔ Database schema
+✔ Security features (CSRF, hashed passwords, login attempts)
+✔ Logs, backups, encryption keys
+✔ Service configuration
 
 ---
 
-### **Step 7 — Configure Nginx**
+### **Step 7 — Create a secure MySQL user for SHM Panel**
+
+```bash
+CREATE USER 'shm_user'@'localhost' IDENTIFIED BY 'StrongPassword123!';  
+GRANT ALL PRIVILEGES ON shm_panel.* TO 'shm_user'@'localhost';  
+FLUSH PRIVILEGES;  
+```
+
+Restart services (if needed):
+
+```bash
+systemctl restart nginx
+systemctl restart php8.4-fpm
+```
+
+### **Step 7.1 — Configure Nginx**
 
 Create a new config file:
 
