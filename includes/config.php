@@ -17,4 +17,8 @@ try {
 
 // Start session
 session_start();
+
+// Include functions and auth AFTER database connection is established
+require_once __DIR__ . '/functions.php';
+require_once __DIR__ . '/auth.php';
 ?>
