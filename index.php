@@ -1,73 +1,68 @@
 <?php
-require_once 'includes/config.php';
+// index.php
 
-if (is_logged_in()) {
-    header('Location: pages/dashboard.php');
-    exit;
+// 1. Always bootstrap config first (DB, session, functions, auth)
+require_once __DIR__ . '/includes/config.php';
+
+// 2. Then your routing helpers
+function getPageMap(): array
+{
+    return [
+        'login'     => 'Login',
+        'dashboard' => 'Dashboard',
+        'domains'   => 'Domains',
+        'ssl'       => 'SSL',
+        'database'  => 'Database',
+        'files'     => 'Files',
+        'dns'       => 'DNS',
+        'users'     => 'Users',
+    ];
 }
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $username = sanitize_input($_POST['username']);
-    $password = $_POST['password'];
-    
-    $stmt = $pdo->prepare("SELECT * FROM users WHERE username = ? AND status = 'active'");
-    $stmt->execute([$username]);
-    $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    
-    if ($user && password_verify($password, $user['password'])) {
-        $_SESSION['user_id'] = $user['id'];
-        $_SESSION['username'] = $user['username'];
-        $_SESSION['user_role'] = $user['role'];
-        
-        // Update last login
-        $stmt = $pdo->prepare("UPDATE users SET last_login = NOW() WHERE id = ?");
-        $stmt->execute([$user['id']]);
-        
-        header('Location: pages/dashboard.php');
-        exit;
+function getCurrentPageSlug(): string
+{
+    $uri  = $_SERVER['REQUEST_URI'];
+    $slug = trim(parse_url($uri, PHP_URL_PATH), '/');
+    return !empty($slug) ? $slug : 'login';
+}
+
+function getPageTitle(string $slug): string
+{
+    $map = getPageMap();
+    if (isset($map[$slug])) {
+        return $map[$slug];
+    }
+    return ucwords(str_replace('-', ' ', $slug));
+}
+
+function loadPage(string $slug): void
+{
+    $map      = getPageMap();
+    $isAllowed = isset($map[$slug]);
+    $file      = __DIR__ . '/pages/' . $slug . '.php';
+
+    if ($isAllowed && file_exists($file)) {
+        $pageTitle = getPageTitle($slug);
     } else {
-        $error = "Invalid username or password";
+        http_response_code(404);
+        $slug      = '404';
+        $file      = __DIR__ . '/pages/404.php';
+        $pageTitle = 'Page Not Found';
+    }
+
+    // for all non-public pages, enforce login & show header/footer
+    if ($slug !== 'login' && $slug !== '404') {
+        require_login(); // from auth.php
+        require_once __DIR__ . '/includes/header.php';
+    }
+
+    // main page content
+    require_once $file;
+
+    if ($slug !== 'login' && $slug !== '404') {
+        require_once __DIR__ . '/includes/footer.php';
     }
 }
-?>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SHM Panel - Login</title>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); height: 100vh; display: flex; align-items: center; justify-content: center; }
-        .login-container { background: white; padding: 40px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-        h1 { text-align: center; margin-bottom: 30px; color: #333; }
-        .form-group { margin-bottom: 20px; }
-        label { display: block; margin-bottom: 5px; color: #555; }
-        input[type="text"], input[type="password"] { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 5px; font-size: 16px; }
-        button { background: #007bff; color: white; padding: 12px; border: none; border-radius: 5px; cursor: pointer; font-size: 16px; width: 100%; }
-        button:hover { background: #0056b3; }
-        .error { color: red; text-align: center; margin-bottom: 15px; }
-    </style>
-</head>
-<body>
-    <div class="login-container">
-        <h1>SHM Panel Login</h1>
-        
-        <?php if (isset($error)): ?>
-            <div class="error"><?php echo $error; ?></div>
-        <?php endif; ?>
-        
-        <form method="post">
-            <div class="form-group">
-                <label>Username</label>
-                <input type="text" name="username" required>
-            </div>
-            <div class="form-group">
-                <label>Password</label>
-                <input type="password" name="password" required>
-            </div>
-            <button type="submit">Login</button>
-        </form>
-    </div>
-</body>
-</html>
+
+$slug = getCurrentPageSlug();
+loadPage($slug);
