@@ -2,164 +2,157 @@
 require_once '../includes/config.php';
 require_once '../includes/auth.php';
 require_login();
-check_permission('file_management');
 
-$domain_id = intval($_GET['domain_id']);
-$file_path = isset($_GET['file']) ? $_GET['file'] : '';
-
-// Verify domain ownership
-$stmt = $pdo->prepare("SELECT * FROM domains WHERE id = ? AND user_id = ?");
-$stmt->execute([$domain_id, $_SESSION['user_id']]);
-$domain = $stmt->fetch();
-
-if (!$domain) {
-    die("Domain not found or access denied");
+// Handle file selection and content saving
+$filePath = 'files/index.php'; // Default file to edit
+if (isset($_GET['file'])) {
+    $filePath = 'files/' . basename($_GET['file']); // Prevent path traversal
 }
 
-$full_path = $domain['document_root'] . $file_path;
-
-if (!file_exists($full_path)) {
-    die("File not found");
+if ($_SERVER["REQUEST_METHOD"] === "POST") {
+    // Save changes to file
+    $fileContent = $_POST['editor'];
+    file_put_contents($filePath, $fileContent);
 }
 
-// Handle file save
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $content = $_POST['content'];
-    if (file_put_contents($full_path, $content)) {
-        // Log file edit
-        $stmt = $pdo->prepare("INSERT INTO files (user_id, domain_id, file_path, file_name, file_size, file_type, permissions, created_at, modified_at) VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW()) ON DUPLICATE KEY UPDATE modified_at = NOW()");
-        $stmt->execute([$_SESSION['user_id'], $domain_id, dirname($file_path), basename($file_path), filesize($full_path), mime_content_type($full_path), substr(sprintf('%o', fileperms($full_path)), -4)]);
-        
-        header('Location: files.php?domain_id=' . $domain_id . '&path=' . urlencode(dirname($file_path)) . '&success=File saved successfully');
-        exit;
-    } else {
-        $error = "Failed to save file";
+// Load file content for the editor
+$fileContent = file_get_contents($filePath);
+
+// List available PHP files in the "files" directory
+$files = array_diff(scandir('files'), ['.', '..']);
+
+// Handle file management (create, delete, rename)
+if (isset($_POST['action'])) {
+    if ($_POST['action'] === 'create') {
+        $newFile = 'files/' . $_POST['filename'];
+touch($newFile);
+    } elseif ($_POST['action'] === 'delete' && file_exists($filePath)) {
+        unlink($filePath);
+    } elseif ($_POST['action'] === 'rename' && isset($_POST['new_name'])) {
+        rename($filePath, 'files/' . $_POST['new_name']);
+        $filePath = 'files/' . $_POST['new_name'];
     }
 }
 
-$content = file_get_contents($full_path);
-$file_info = [
-    'name' => basename($file_path),
-    'path' => $file_path,
-    'size' => filesize($full_path),
-    'permissions' => substr(sprintf('%o', fileperms($full_path)), -4),
-    'modified' => date('Y-m-d H:i:s', filemtime($full_path))
-];
+// Run the selected file and capture the output (for preview)
+ob_start();
+include($filePath);
+$previewContent = ob_get_clean();
+
+// Define a list of keywords and colors for syntax highlighting (simplified for PHP)
+$php_keywords = ['echo', 'if', 'else', 'foreach', 'while', 'function', 'class', 'public', 'private', 'return', 'const'];
+$highlighted_code = highlight_php_code($fileContent, $php_keywords);
+
+// Syntax highlighting function
+function highlight_php_code($code, $keywords) {
+    $pattern = '/\b(' . implode('|', $keywords) . ')\b/';
+    return preg_replace_callback($pattern, function($matches) {
+        return '<span style="color: #e91e63; font-weight: bold;">' . $matches[0] . '</span>';
+    }, $code);
+}
 ?>
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>File Editor - SHM Panel</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom PHP Code Editor</title>
     <style>
-        .editor-container { width: 100%; height: 70vh; border: 1px solid #ddd; }
-        .editor-header { background: #f8f9fa; padding: 10px; border-bottom: 1px solid #ddd; }
-        .editor-toolbar { background: #e9ecef; padding: 5px; border-bottom: 1px solid #ddd; }
-        textarea { width: 100%; height: 100%; border: none; font-family: monospace; padding: 10px; }
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            justify-content: space-between;
+            padding: 20px;
+        }
+        .editor-container {
+            width: 48%;
+        }
+        #editor {
+            width: 100%;
+            height: 500px;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 14px;
+            line-height: 1.6;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #282c34;
+            color: #f8f8f2;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            overflow-wrap: break-word;
+            box-sizing: border-box;
+        }
+        #preview {
+            width: 48%;
+            height: 500px;
+            padding: 10px;
+height: 500px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            background-color: #f7f7f7;
+            box-sizing: border-box;
+            overflow-y: auto;
+        }
+        h2 {
+            font-size: 20px;
+        }
+        .file-actions {
+            margin-top: 20px;
+        }
+        .file-actions input[type="text"] {
+            padding: 5px;
+            margin-bottom: 10px;
+            width: 100%;
+            font-size: 14px;
+        }
     </style>
 </head>
 <body>
-    <?php include_once '../includes/header.php'; ?>
 
-    <div class="main-content">
-        <div class="header">
-            <h1>File Editor: <?php echo $file_info['name']; ?></h1>
-        </div>
+    <!-- Editor Section -->
+    <div class="editor-container">
+        <h2>Code Editor</h2>
+        <form method="POST" action="editor.php">
+            <textarea name="editor" id="editor"><?php echo htmlspecialchars($fileContent); ?></textarea>
+            <br>
+            <button type="submit">Save Changes</button>
+        </form>
 
-        <div class="container">
-            <div class="card">
-                <div class="card-header">
-                    <div class="file-info">
-                        <strong>Path:</strong> <?php echo $file_info['path']; ?> | 
-                        <strong>Size:</strong> <?php echo format_file_size($file_info['size']); ?> | 
-                        <strong>Permissions:</strong> <?php echo $file_info['permissions']; ?> | 
-                        <strong>Modified:</strong> <?php echo $file_info['modified']; ?>
-                    </div>
-                </div>
-                <div class="card-body">
-                    <?php if (isset($error)): ?>
-                        <div class="alert alert-danger"><?php echo $error; ?></div>
-                    <?php endif; ?>
+        <!-- File Browser Section -->
+<h3>File Browser</h3>
+        <ul>
+            <?php foreach ($files as $file): ?>
+                <li><a href="?file=<?php echo urlencode($file); ?>"><?php echo $file; ?></a></li>
+            <?php endforeach; ?>
+        </ul>
 
-                    <form method="post">
-                        <div class="editor-toolbar">
-                            <button type="button" onclick="formatCode()">Format</button>
-                            <button type="button" onclick="insertTemplate()">Insert Template</button>
-                            <select onchange="changeSyntax(this.value)">
-                                <option value="">Select Syntax</option>
-                                <option value="php">PHP</option>
-                                <option value="html">HTML</option>
-                                <option value="css">CSS</option>
-                                <option value="js">JavaScript</option>
-                                <option value="sql">SQL</option>
-                            </select>
-                        </div>
-                        
-                        <div class="editor-container">
-                            <textarea name="content" id="fileContent" spellcheck="false"><?php echo htmlspecialchars($content); ?></textarea>
-                        </div>
-                        
-                        <div style="margin-top: 10px;">
-                            <button type="submit" class="btn btn-primary">Save File</button>
-                            <a href="files.php?domain_id=<?php echo $domain_id; ?>&path=<?php echo urlencode(dirname($file_path)); ?>" class="btn">Cancel</a>
-                            <button type="button" onclick="downloadFile()" class="btn">Download</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
+        <!-- File Management Section -->
+        <div class="file-actions">
+            <form method="POST" action="editor.php">
+                <h3>Create a New File</h3>
+                <input type="text" name="filename" placeholder="Enter filename" required>
+                <button type="submit" name="action" value="create">Create File</button>
+            </form>
+
+            <form method="POST" action="editor.php">
+                <h3>Rename File</h3>
+                <input type="text" name="new_name" placeholder="New filename" required>
+                <button type="submit" name="action" value="rename">Rename File</button>
+            </form>
+
+            <form method="POST" action="editor.php">
+                <h3>Delete File</h3>
+                <button type="submit" name="action" value="delete">Delete Current File</button>
+            </form>
         </div>
     </div>
 
-    <script>
-        function formatCode() {
-            // Basic code formatting - in production, use a proper formatter
-            const content = document.getElementById('fileContent');
-            content.value = content.value.replace(/\t/g, '    '); // Convert tabs to spaces
-        }
-        
-        function insertTemplate() {
-            const templates = {
-                'php': '<?php\n// PHP file\necho "Hello World";\n?>',
-                'html': '<!DOCTYPE html>\n<html>\n<head>\n    <title>Page</title>\n</head>\n<body>\n    \n</body>\n</html>',
-                'css': '/* CSS Styles */\nbody {\n    margin: 0;\n    padding: 0;\n}'
-            };
-            
-            const type = prompt('Select template type (php, html, css):');
-            if (templates[type]) {
-                document.getElementById('fileContent').value = templates[type];
-            }
-        }
-        
-        function changeSyntax(syntax) {
-            // Syntax highlighting would be implemented with a proper editor
-            console.log('Syntax changed to:', syntax);
-        }
-        
-        function downloadFile() {
-            const content = document.getElementById('fileContent').value;
-            const blob = new Blob([content], { type: 'text/plain' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '<?php echo $file_info['name']; ?>';
-            a.click();
-            URL.revokeObjectURL(url);
-        }
-        
-        // Auto-save draft every 30 seconds
-        setInterval(() => {
-            const content = document.getElementById('fileContent').value;
-            localStorage.setItem('file_draft_<?php echo md5($file_path); ?>', content);
-        }, 30000);
-        
-        // Load draft on page load
-        window.addEventListener('load', () => {
-            const draft = localStorage.getItem('file_draft_<?php echo md5($file_path); ?>');
-            if (draft && confirm('Found unsaved draft. Load it?')) {
-                document.getElementById('fileContent').value = draft;
-            }
-        });
-    </script>
+    <!-- Preview Section -->
+    <div id="preview">
+        <h3>Preview Output</h3>
+<div><?php echo nl2br($previewContent); ?></div>
+    </div>
+
 </body>
 </html>
