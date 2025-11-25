@@ -81,7 +81,7 @@ if (!file_exists('../includes/db.php')) {
         <h1>Installation Successful!</h1>
         <p>SHM Panel has been installed correctly. The database is setup and your admin account is ready.</p>
 
-        <a href="../index.php" class="btn">Go to Login Page</a>
+        <a href="/" class="btn">Go to Login Page</a>
 
         <div class="security-notice">
             <strong>⚠️ Security Warning:</strong><br>
