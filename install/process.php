@@ -42,7 +42,7 @@ try {
     
     // Create admin user
     $hashed_password = password_hash($admin_pass, PASSWORD_DEFAULT);
-    $stmt = $pdo->prepare("INSERT INTO users (username, email, password, role, created_at) VALUES (?, ?, ?, 'admin', NOW())");
+    $stmt = $pdo->prepare("INSERT INTO users (username, email, password, role, status, created_at) VALUES (?, ?, ?, 'admin', 'active', NOW())");
     $stmt->execute([$admin_user, $admin_email, $hashed_password]);
     
     // Create config file
