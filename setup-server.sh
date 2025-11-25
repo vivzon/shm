@@ -448,7 +448,7 @@ ln -sf /etc/nginx/sites-available/$DOMAIN_NAME /etc/nginx/sites-enabled/
 
 # Create Directories & Permissions
 mkdir -p /var/www/shm-panel
-echo "<?php phpinfo(); ?>" > /var/www/shm-panel/index.php
+echo "<?php phpinfo(); ?>" > /var/www/shm-panel/phpinfo.php
 chown -R $APP_USER:www-data /var/www/shm-panel
 chown -R www-data:www-data /var/www/webmail
 chmod 755 /var/www/shm-panel
