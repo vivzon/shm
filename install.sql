@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS `users` (
   `plan_id` int DEFAULT NULL,
   `ssh_access_enabled` tinyint(1) NOT NULL DEFAULT '0',
   `created_at` datetime NOT NULL,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `last_login` datetime DEFAULT NULL,
   `status` enum('active','inactive','suspended') NOT NULL DEFAULT 'active',
   PRIMARY KEY (`id`),
