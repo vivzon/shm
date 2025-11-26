@@ -201,6 +201,23 @@ CREATE TABLE IF NOT EXISTS `sessions` (
 
 -- --------------------------------------------------------
 
+-- SSL certificates table
+CREATE TABLE IF NOT EXISTS `ssl_certificates` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `domain_id` int(11) NOT NULL,
+  `certificate` text NOT NULL,
+  `private_key` text NOT NULL,
+  `ca_bundle` text,
+  `expires_at` datetime NOT NULL,
+  `auto_renew` tinyint(1) DEFAULT '1',
+  `created_at` datetime NOT NULL,
+  PRIMARY KEY (`id`),
+  KEY `domain_id` (`domain_id`),
+  FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+
+------------------------------------------------------------------
+
 -- User Preferences table
 CREATE TABLE IF NOT EXISTS `user_preferences` (
   `user_id` int NOT NULL,
