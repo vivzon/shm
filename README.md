@@ -86,13 +86,13 @@ sudo useradd -r -s /bin/false shmuser
 Make it executable:
 
 ```bash
-sudo chmod +x /var/www/shm-panel/setup-server.sh
+sudo chmod +x /var/www/shm-panel/install.sh
 ```
 
 Run it:
 
 ```bash
-sudo /var/www/shm-panel/setup-server.sh
+sudo /var/www/shm-panel/install.sh
 ```
 
 This script will:
@@ -111,6 +111,14 @@ This script will:
 
 ---
 
+### **Step 7 — Create a secure MySQL user for SHM Panel**
+
+```bash
+CREATE USER 'shm_user'@'localhost' IDENTIFIED BY 'StrongPassword123!';  
+GRANT ALL PRIVILEGES ON shm_panel.* TO 'shm_user'@'localhost';  
+FLUSH PRIVILEGES;  
+```
+
 Restart services (if needed):
  
 ```bash
@@ -118,9 +126,60 @@ systemctl restart nginx
 systemctl restart php8.4-fpm
 ```
 
+### **Step 7.1 — Configure Nginx**
+
+Create a new config file:
+
+```bash
+sudo nano /etc/nginx/sites-available/shm-panel.conf
+```
+
+Paste the following:
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name 147.79.71.199 server.sellvell.com;
+
+    root /var/www/shm-panel;
+    index index.php index.html;
+
+    access_log /var/log/nginx/shm_access.log;
+    error_log  /var/log/nginx/shm_error.log;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;  # <- change if your socket is different
+    }
+
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|webp)$ {
+        try_files $uri $uri/ =404;
+        access_log off;
+        expires max;
+    }
+}
+```
+
+Enable the site and reload Nginx:
+
+```bash
+//sudo ln -s /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/
+
+sudo ln -sf /etc/nginx/sites-available/shm-panel.conf /etc/nginx/sites-enabled/shm-panel.conf
+
+sudo nginx -t
+sudo systemctl restart nginx
+```
+
 ---
 
-### **Step 7 — Test PHP**
+### **Step 8 — Test PHP**
 
 Create a test file:
 
@@ -143,7 +202,7 @@ sudo rm /var/www/shm-panel/test.php
 
 ---
 
-### **Step 8 — Complete Installation via Web Interface**
+### **Step 9 — Complete Installation via Web Interface**
 
 Open your browser and go to:
 
@@ -160,7 +219,7 @@ Use the credentials displayed by the deployment script or check:
 
 ---
 
-### **Step 9 — Secure the Installation**
+### **Step 10 — Secure the Installation**
 
 Remove the installer folder:
 
