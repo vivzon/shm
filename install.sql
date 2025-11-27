@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS `domains` (
   `ssl_cert` text,
   `ssl_key` text,
   `created_at` datetime NOT NULL,
-  `expiry_date` date DEFAULT NULL,  -- Fixed missing comma
+  `expiry_date` date DEFAULT NULL,
   `status` enum('active','suspended','pending') NOT NULL DEFAULT 'active',
   PRIMARY KEY (`id`),
   UNIQUE KEY `domain_name` (`domain_name`),
@@ -40,9 +40,8 @@ CREATE TABLE IF NOT EXISTS `domains` (
   FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Table structure for table `domain_aliases`
 CREATE TABLE IF NOT EXISTS `domain_aliases` (
   `id` int NOT NULL AUTO_INCREMENT,
   `domain_id` int NOT NULL,
@@ -51,9 +50,8 @@ CREATE TABLE IF NOT EXISTS `domain_aliases` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Table structure for table `domain_redirects`
 CREATE TABLE IF NOT EXISTS `domain_redirects` (
   `id` int NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
@@ -64,9 +62,8 @@ CREATE TABLE IF NOT EXISTS `domain_redirects` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Table structure for table `email_accounts`
 CREATE TABLE IF NOT EXISTS `email_accounts` (
   `id` int NOT NULL AUTO_INCREMENT,
   `domain_id` int DEFAULT NULL,
@@ -80,9 +77,8 @@ CREATE TABLE IF NOT EXISTS `email_accounts` (
   FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Files table (for file management tracking)
 CREATE TABLE IF NOT EXISTS `files` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
@@ -101,11 +97,10 @@ CREATE TABLE IF NOT EXISTS `files` (
   FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- FTP Accounts Table
 CREATE TABLE IF NOT EXISTS `ftp_accounts` (
-  `id` int NOT NULL AUTO_INCREMENT,  -- Added AUTO_INCREMENT
+  `id` int NOT NULL AUTO_INCREMENT,
   `user_id` int NOT NULL,
   `domain_id` int NOT NULL,
   `username` varchar(255) NOT NULL,
@@ -115,11 +110,10 @@ CREATE TABLE IF NOT EXISTS `ftp_accounts` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Databases table
 CREATE TABLE IF NOT EXISTS `databases` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,  -- Added AUTO_INCREMENT
+  `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
   `domain_id` int(11) DEFAULT NULL,
   `db_name` varchar(64) NOT NULL,
@@ -136,9 +130,8 @@ CREATE TABLE IF NOT EXISTS `databases` (
   FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- DNS Records table
 CREATE TABLE IF NOT EXISTS `dns_records` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `domain_id` int(11) NOT NULL,
@@ -153,9 +146,8 @@ CREATE TABLE IF NOT EXISTS `dns_records` (
   FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- User permissions table
 CREATE TABLE IF NOT EXISTS `user_permissions` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
@@ -166,9 +158,8 @@ CREATE TABLE IF NOT EXISTS `user_permissions` (
   FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Hosting Plans Table
 CREATE TABLE IF NOT EXISTS `hosting_plans` (
   `id` int NOT NULL AUTO_INCREMENT,
   `name` varchar(255) NOT NULL,
@@ -184,9 +175,8 @@ CREATE TABLE IF NOT EXISTS `hosting_plans` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- Sessions table
 CREATE TABLE IF NOT EXISTS `sessions` (
   `id` varchar(128) NOT NULL,
   `user_id` int(11) DEFAULT NULL,
@@ -199,9 +189,8 @@ CREATE TABLE IF NOT EXISTS `sessions` (
   FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
--- --------------------------------------------------------
+-- --------------------------------------------------------------
 
--- SSL certificates table
 CREATE TABLE IF NOT EXISTS `ssl_certificates` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `domain_id` int(11) NOT NULL,
@@ -216,9 +205,9 @@ CREATE TABLE IF NOT EXISTS `ssl_certificates` (
   FOREIGN KEY (`domain_id`) REFERENCES `domains` (`id`) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8;
 
-------------------------------------------------------------------
-
+-- --------------------------------------------------------------
 -- User Preferences table
+-- --------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `user_preferences` (
   `user_id` int NOT NULL,
   `default_domain_id` int DEFAULT NULL,
