@@ -1,233 +1,100 @@
 #!/bin/bash
-# ==========================================
-# SHM Panel Setup Script - FINAL ULTIMATE EDITION
-# ==========================================
-# Features:
-# - Robust PHP detection (including PHP 8.3+) and extension install
-# - Safe fallback install (package-by-package) to avoid apt "single string" bug
-# - Nginx config (correct alias + SCRIPT_FILENAME) for phpMyAdmin & Roundcube
-# - MariaDB (MySQL) secure basic setup
-# - Bind9 (named) authoritative zone + SPF/DMARC hints + DKIM via OpenDKIM
-# - Postfix + Dovecot basics + OpenDKIM integration
-# - Certbot command provided (run after DNS propagation)
-# - Fail2ban basic jails & UFW firewall rules
-# - Safe SSH reload and minimal risk of locking yourself out
-# - Creates /root/server_credentials.txt and /root/system-info.sh
-# - Inline comments and logging for clarity (Ultimate: safe + verbose)
-# ==========================================
-set -euo pipefail
-IFS=$'\n\t'
 
-# -------------------------
-# Colors & Logging
-# -------------------------
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
-log(){ echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"; }
-info(){ echo -e "${BLUE}[INFO] $1${NC}"; }
-warning(){ echo -e "${YELLOW}[WARN] $1${NC}"; }
-error(){ echo -e "${RED}[ERROR] $1${NC}"; }
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# -------------------------
-# Must run as root
-# -------------------------
-if [ "$EUID" -ne 0 ]; then
-  error "Please run as root (sudo). Exiting."
-  exit 1
+# Logging function
+log() {
+    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+}
+
+error() {
+    echo -e "${RED}[ERROR] $1${NC}"
+}
+
+warning() {
+    echo -e "${YELLOW}[WARNING] $1${NC}"
+}
+
+info() {
+    echo -e "${BLUE}[INFO] $1${NC}"
+}
+
+# Check if running as root
+if [ "$EUID" -ne 0 ]; then 
+    error "Please run as root"
+    exit 1
 fi
 
-clear
-echo -e "${YELLOW}==============================================${NC}"
-echo -e "${YELLOW}   SHM Panel + DNS + Webmail + phpMyAdmin     ${NC}"
-echo -e "${YELLOW}   FINAL ULTIMATE Installer (Reviewed)        ${NC}"
-echo -e "${YELLOW}==============================================${NC}"
-echo ""
-
-read -p "Enter your Domain Name (e.g., example.com): " DOMAIN_NAME
-if [ -z "$DOMAIN_NAME" ]; then
-  error "Domain name is required. Exiting."
-  exit 1
-fi
-
-# -------------------------
-# Determine public IP (multiple fallbacks)
-# -------------------------
-SERVER_IP=""
-if command -v curl &>/dev/null; then
-  SERVER_IP=$(curl -s ifconfig.me || true)
-fi
-if [ -z "$SERVER_IP" ]; then
-  SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
-fi
-if [ -z "$SERVER_IP" ]; then
-  error "Unable to determine server public IP automatically. Please set SERVER_IP variable and re-run."
-  exit 1
-fi
-
+# Configuration
+SERVER_IP=$(hostname -I | awk '{print $1}')
 TIMEZONE="Asia/Kolkata"
 ADMIN_USER="shmadmin"
-APP_USER="shmuser"
 SSH_PORT="2222"
-
-# Generated secrets
 MYSQL_ROOT_PASSWORD=$(openssl rand -base64 32)
+APP_USER="shmuser"
 APP_USER_PASSWORD=$(openssl rand -base64 16)
-PMA_BLOWFISH=$(openssl rand -base64 32)
-ROUNDCUBE_DB_PASS=$(openssl rand -base64 24)
-MAIL_USER_PASS=$(openssl rand -base64 16)
 
-log "Starting setup for domain: $DOMAIN_NAME (IP: $SERVER_IP)"
-export DEBIAN_FRONTEND=noninteractive
+log "Starting VPS Server Setup for SHM Panel"
+log "Server IP: $SERVER_IP"
 
-# -------------------------
-# Update & essential packages
-# -------------------------
-log "Updating package lists and upgrading system..."
-apt update -y
-apt upgrade -y
+# Update system
+log "Updating system packages..."
+apt update && apt upgrade -y
 
-log "Installing core packages..."
-apt install -y software-properties-common curl wget git unzip htop gnupg2 lsb-release ufw fail2ban dialog apt-transport-https ca-certificates
+# Install essential packages
+log "Installing essential packages..."
+apt install -y \
+    curl wget git unzip htop \
+    nginx mysql-server php-fpm \
+    php-mysql php-curl php-gd php-mbstring \
+    php-xml php-zip php-bcmath php-json \
+    php-intl php-soap php-ldap \
+    ufw fail2ban logrotate \
+    software-properties-common
 
-# Ensure universe repo on Ubuntu
-if [ -f /etc/lsb-release ]; then
-  add-apt-repository universe -y || true
-  apt update -y
-fi
+# Set timezone
+log "Setting timezone to $TIMEZONE..."
+timedatectl set-timezone $TIMEZONE
 
-# -------------------------
-# PHP detection & install (robust)
-# -------------------------
-log "Detecting PHP version..."
-PHP_VERSION=""
-if command -v php &>/dev/null; then
-  PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
-  info "Detected PHP CLI: $PHP_VERSION"
-fi
-
-if [ -z "$PHP_VERSION" ]; then
-  warning "PHP not found. Installing default php-fpm & php-cli..."
-  apt install -y php-fpm php-cli
-  if command -v php &>/dev/null; then
-    PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
-  fi
-fi
-
-# If still empty, try detect using sockets
-if [ -z "$PHP_VERSION" ]; then
-  if ls /run/php/php*-fpm.sock &>/dev/null; then
-    PHP_VERSION=$(ls /run/php/php*-fpm.sock | sed -n 's#.*/php\([0-9]\+\.[0-9]\+\)-fpm.sock#\1#p' | head -n1)
-  fi
-fi
-
-# Final fallback
-if [ -z "$PHP_VERSION" ]; then
-  PHP_VERSION="8.1"
-  warning "Could not auto-detect PHP version; defaulting to $PHP_VERSION"
-fi
-info "Using PHP version: $PHP_VERSION"
-
-# Try installing version-specific packages; on failure do package-by-package fallback
-PHP_EXT_VER=( "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-curl" "php${PHP_VERSION}-gd" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-bcmath" "php${PHP_VERSION}-intl" "php${PHP_VERSION}-soap" "php${PHP_VERSION}-ldap" "php${PHP_VERSION}-imagick" )
-PHP_EXT_GENERIC=( "php-mysql" "php-curl" "php-gd" "php-mbstring" "php-xml" "php-zip" "php-bcmath" "php-intl" "php-soap" "php-ldap" "php-imagick" "imagemagick" )
-
-log "Attempting to install version-specific PHP packages (preferred)..."
-if apt install -y "${PHP_EXT_VER[@]}" 2>/tmp/phperr.log; then
-  info "Installed versioned PHP extensions for $PHP_VERSION."
+# Create application user
+log "Creating application user: $APP_USER..."
+if id "$APP_USER" &>/dev/null; then
+    warning "User $APP_USER already exists"
 else
-  warning "Versioned install failed; will attempt package-by-package fallback (see /tmp/phperr.log)."
-  for pkg in "${PHP_EXT_GENERIC[@]}"; do
-    info "Trying to install $pkg ..."
-    if apt install -y "$pkg"; then
-      info "Installed $pkg"
-    else
-      warning "Package $pkg not available or failed — skipping."
-    fi
-  done
+    useradd -m -s /bin/bash $APP_USER
+    echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
+    usermod -aG sudo $APP_USER
 fi
 
-# Determine PHP-FPM socket
-PHP_SOCKET=""
-if [ -S "/run/php/php${PHP_VERSION}-fpm.sock" ]; then
-  PHP_SOCKET="unix:/run/php/php${PHP_VERSION}-fpm.sock"
+# Create admin user
+log "Creating admin user: $ADMIN_USER..."
+if id "$ADMIN_USER" &>/dev/null; then
+    warning "User $ADMIN_USER already exists"
 else
-  # find any php*fpm socket
-  SOCK_PATH=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n1 || true)
-  if [ -n "$SOCK_PATH" ]; then
-    PHP_SOCKET="unix:$SOCK_PATH"
-    info "Detected PHP-FPM socket: $PHP_SOCKET"
-  else
-    PHP_SOCKET="127.0.0.1:9000"
-    warning "PHP-FPM socket not found; using fallback $PHP_SOCKET — ensure php-fpm is running."
-  fi
-fi
-info "Final PHP socket: $PHP_SOCKET"
-
-# -------------------------
-# Install core services
-# -------------------------
-log "Installing Nginx, MariaDB, named (bind9), certbot, mail stack, opendkim..."
-apt install -y nginx mariadb-server bind9 bind9utils bind9-doc dnsutils certbot python3-certbot-nginx postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools
-
-timedatectl set-timezone "$TIMEZONE" || true
-
-# -------------------------
-# Create users + save credentials
-# -------------------------
-log "Configuring users..."
-if ! id "$APP_USER" &>/dev/null; then
-  useradd -m -s /bin/bash "$APP_USER" || true
-  echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
-  usermod -aG sudo "$APP_USER" || true
+    useradd -m -s /bin/bash $ADMIN_USER
+    ADMIN_PASSWORD=$(openssl rand -base64 16)
+    echo "$ADMIN_USER:$ADMIN_PASSWORD" | chpasswd
+    usermod -aG sudo $ADMIN_USER
+    
+    # Save credentials
+    echo "Admin User: $ADMIN_USER" > /root/server_credentials.txt
+    echo "Admin Password: $ADMIN_PASSWORD" >> /root/server_credentials.txt
+    echo "App User: $APP_USER" >> /root/server_credentials.txt
+    echo "App Password: $APP_USER_PASSWORD" >> /root/server_credentials.txt
+    echo "MySQL Root Password: $MYSQL_ROOT_PASSWORD" >> /root/server_credentials.txt
+    chmod 600 /root/server_credentials.txt
 fi
 
-if ! id "$ADMIN_USER" &>/dev/null; then
-  useradd -m -s /bin/bash "$ADMIN_USER" || true
-  ADMIN_PASSWORD=$(openssl rand -base64 16)
-  echo "$ADMIN_USER:$ADMIN_PASSWORD" | chpasswd
-  usermod -aG sudo "$ADMIN_USER" || true
+# Configure SSH
+log "Configuring SSH security..."
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
 
-  CRED_FILE="/root/server_credentials.txt"
-  cat > "$CRED_FILE" <<EOF
-=== SHM Panel Server Credentials ===
-Domain: $DOMAIN_NAME
-Admin User: $ADMIN_USER
-Admin Password: $ADMIN_PASSWORD
-App User: $APP_USER
-App Password: $APP_USER_PASSWORD
-MySQL Root Password: $MYSQL_ROOT_PASSWORD
-Roundcube DB Password: $ROUNDCUBE_DB_PASS
-Mail User Password: $MAIL_USER_PASS
-SSH Port: $SSH_PORT
-EOF
-  chmod 600 "$CRED_FILE"
-  info "Saved credentials to $CRED_FILE"
-fi
-
-# -------------------------
-# Firewall (UFW)
-# -------------------------
-log "Configuring UFW firewall..."
-ufw --force reset
-ufw default deny incoming
-ufw default allow outgoing
-ufw allow "$SSH_PORT"/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 53/tcp
-ufw allow 53/udp
-ufw allow 25/tcp
-ufw allow 465/tcp
-ufw allow 587/tcp
-ufw allow 143/tcp
-ufw allow 993/tcp
-ufw --force enable
-
-# -------------------------
-# SSH hardening (safe reload)
-# -------------------------
-log "Hardening SSH config..."
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%F) || true
-cat > /etc/ssh/sshd_config <<EOF
+cat > /etc/ssh/sshd_config << EOF
 Port $SSH_PORT
 Protocol 2
 PermitRootLogin no
@@ -245,419 +112,615 @@ ClientAliveInterval 300
 ClientAliveCountMax 2
 AllowUsers $ADMIN_USER $APP_USER
 EOF
-systemctl reload ssh || systemctl restart ssh || true
 
-# -------------------------
-# MariaDB basic secure settings
-# -------------------------
-log "Securing MariaDB (basic automated changes)..."
-systemctl enable mariadb
-systemctl start mariadb
+# Configure firewall
+log "Configuring firewall..."
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow $SSH_PORT
+ufw allow 80
+ufw allow 443
+ufw --force enable
 
-mysql <<SQL || true
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
-DELETE FROM mysql.user WHERE User='';
-DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');
-DROP DATABASE IF EXISTS test;
-DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
-FLUSH PRIVILEGES;
-SQL
+# Configure fail2ban
+log "Configuring fail2ban..."
+systemctl enable fail2ban
+cat > /etc/fail2ban/jail.local << EOF
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 3
 
-cat > /root/.my.cnf <<EOF
+[sshd]
+enabled = true
+port = $SSH_PORT
+logpath = /var/log/auth.log
+maxretry = 3
+
+[sshd-ddos]
+enabled = true
+port = $SSH_PORT
+logpath = /var/log/auth.log
+maxretry = 5
+
+[nginx-http-auth]
+enabled = true
+filter = nginx-http-auth
+port = http,https
+logpath = /var/log/nginx/error.log
+EOF
+
+# Configure MySQL
+log "Configuring MySQL..."
+systemctl enable mysql
+systemctl start mysql
+
+# Secure MySQL installation
+mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_ROOT_PASSWORD';"
+mysql -e "DELETE FROM mysql.user WHERE User='';"
+mysql -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1');"
+mysql -e "DROP DATABASE IF EXISTS test;"
+mysql -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';"
+mysql -e "FLUSH PRIVILEGES;"
+
+# Create MySQL configuration
+cat > /root/.my.cnf << EOF
 [client]
 user=root
 password=$MYSQL_ROOT_PASSWORD
 EOF
+
 chmod 600 /root/.my.cnf
 
-# -------------------------
-# Bind9 (named) configuration + zone
-# -------------------------
-log "Configuring named (Bind9) zone for $DOMAIN_NAME..."
-cat > /etc/bind/named.conf.options <<EOF
-acl "trusted" {
-  127.0.0.1;
-  ::1;
-  $SERVER_IP;
-};
+# Configure PHP
+log "Configuring PHP..."
+PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+cat > /etc/php/$PHP_VERSION/fpm/php.ini << EOF
+[PHP]
+engine = On
+short_open_tag = Off
+precision = 14
+output_buffering = 4096
+zlib.output_compression = Off
+implicit_flush = Off
+unserialize_callback_func =
+serialize_precision = -1
+disable_functions = pcntl_alarm,pcntl_fork,pcntl_waitpid,pcntl_wait,pcntl_wifexited,pcntl_wifstopped,pcntl_wifsignaled,pcntl_wifcontinued,pcntl_wexitstatus,pcntl_wtermsig,pcntl_wstopsig,pcntl_signal,pcntl_signal_dispatch,pcntl_get_last_error,pcntl_strerror,pcntl_sigprocmask,pcntl_sigwaitinfo,pcntl_sigtimedwait,pcntl_exec,pcntl_getpriority,pcntl_setpriority,
+disable_classes =
+memory_limit = 256M
+error_reporting = E_ALL & ~E_DEPRECATED & ~E_STRICT
+display_errors = Off
+display_startup_errors = Off
+log_errors = On
+log_errors_max_len = 1024
+ignore_repeated_errors = Off
+ignore_repeated_source = Off
+report_memleaks = On
+track_errors = Off
+html_errors = Off
+variables_order = "GPCS"
+request_order = "GP"
+register_argc_argv = Off
+auto_globals_jit = On
+post_max_size = 100M
+auto_prepend_file =
+auto_append_file =
+default_mimetype = "text/html"
+default_charset = "UTF-8"
+doc_root =
+user_dir =
+enable_dl = Off
+file_uploads = On
+upload_max_filesize = 100M
+max_file_uploads = 20
+allow_url_fopen = On
+allow_url_include = Off
+default_socket_timeout = 60
 
-options {
-  directory "/var/cache/bind";
-  recursion yes;
-  allow-recursion { trusted; };
-  listen-on { any; };
-  listen-on-v6 { any; };
-  allow-transfer { none; };
-  forwarders { 8.8.8.8; 8.8.4.4; };
-  dnssec-validation auto;
-};
+[Date]
+date.timezone = "$TIMEZONE"
+
+[filter]
+
+[iconv]
+
+[intl]
+
+[sqlite]
+
+[sqlite3]
+
+[Pcre]
+
+[Pdo]
+
+[Pdo_mysql]
+pdo_mysql.default_socket=
+
+[Phar]
+
+[mail function]
+SMTP = localhost
+smtp_port = 25
+mail.add_x_header = On
+
+[SQL]
+sql.safe_mode = Off
+
+[ODBC]
+
+[MySQLi]
+mysqli.default_port = 3306
+mysqli.default_socket =
+mysqli.default_host =
+mysqli.default_user =
+mysqli.default_pw =
+mysqli.reconnect = Off
+
+[mysqlnd]
+mysqlnd.collect_statistics = On
+mysqlnd.collect_memory_statistics = Off
+
+[PostgreSQL]
+
+[bcmath]
+
+[browscap]
+
+[Session]
+session.save_handler = files
+session.use_strict_mode = 0
+session.use_cookies = 1
+session.use_only_cookies = 1
+session.name = PHPSESSID
+session.auto_start = 0
+session.cookie_lifetime = 0
+session.cookie_path = /
+session.cookie_domain =
+session.cookie_httponly =
+session.cookie_samesite =
+session.serialize_handler = php
+session.gc_probability = 1
+session.gc_divisor = 1000
+session.gc_maxlifetime = 1440
+session.referer_check =
+session.cache_limiter = nocache
+session.cache_expire = 180
+session.use_trans_sid = 0
+session.sid_length = 26
+session.trans_sid_tags = "a=href,area=href,frame=src,form="
+session.sid_bits_per_character = 5
+
+[Assertion]
+
+[COM]
+
+[mbstring]
+
+[gd]
+
+[exif]
+
+[Tidy]
+tidy.clean_output = Off
+
+[soap]
+soap.wsdl_cache_enabled=1
+soap.wsdl_cache_dir="/tmp"
+soap.wsdl_cache_ttl=86400
+soap.wsdl_cache_limit = 5
+
+[ldap]
+ldap.max_links = -1
+
+[dba]
+
+[opcache]
+opcache.enable=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=8
+opcache.max_accelerated_files=10000
+opcache.revalidate_freq=2
+opcache.fast_shutdown=1
 EOF
 
-cat > /etc/bind/named.conf.local <<EOF
-zone "$DOMAIN_NAME" {
-  type master;
-  file "/etc/bind/zones/db.$DOMAIN_NAME";
-};
-EOF
+# Configure Nginx
+log "Configuring Nginx..."
+cat > /etc/nginx/nginx.conf << EOF
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+include /etc/nginx/modules-enabled/*.conf;
 
-mkdir -p /etc/bind/zones
-SERIAL=$(date +%Y%m%d01)
-cat > /etc/bind/zones/db.$DOMAIN_NAME <<EOF
-\$TTL 604800
-@ IN SOA ns1.$DOMAIN_NAME. admin.$DOMAIN_NAME. (
-  $SERIAL ; Serial
-  604800  ; Refresh
-  86400   ; Retry
-  2419200 ; Expire
-  604800 ) ; Negative Cache TTL
+events {
+    worker_connections 768;
+    multi_accept on;
+}
 
-; Name servers
-@ IN NS ns1.$DOMAIN_NAME.
-@ IN NS ns2.$DOMAIN_NAME.
+http {
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    server_tokens off;
 
-; A records
-@       IN A $SERVER_IP
-ns1     IN A $SERVER_IP
-ns2     IN A $SERVER_IP
-www     IN A $SERVER_IP
-mail    IN A $SERVER_IP
-webmail IN A $SERVER_IP
-mysql   IN A $SERVER_IP
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
 
-; MX record
-@ IN MX 10 mail.$DOMAIN_NAME.
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
 
-; Basic SPF (REVIEW if you also use other mail providers)
-@ IN TXT "v=spf1 mx a ip4:$SERVER_IP -all"
+    access_log /var/log/nginx/access.log;
+    error_log /var/log/nginx/error.log;
 
-; Basic DMARC (REVIEW reporting addresses)
-_dmarc IN TXT "v=DMARC1; p=quarantine; rua=mailto:postmaster@$DOMAIN_NAME; ruf=mailto:postmaster@$DOMAIN_NAME; fo=1"
-EOF
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types
+        text/plain
+        text/css
+        text/xml
+        text/javascript
+        application/json
+        application/javascript
+        application/xml+rss
+        application/atom+xml
+        image/svg+xml;
 
-named-checkconf || true
-named-checkzone "$DOMAIN_NAME" /etc/bind/zones/db.$DOMAIN_NAME || true
-systemctl restart named || true
-systemctl enable named || true
-
-# -------------------------
-# Postfix + Dovecot basic setup
-# -------------------------
-log "Installing and configuring Postfix & Dovecot..."
-debconf-set-selections <<< "postfix postfix/mailname string $DOMAIN_NAME"
-debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
-apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d || true
-
-postconf -e "myhostname = mail.$DOMAIN_NAME"
-postconf -e "mydestination = \$myhostname, localhost.$DOMAIN_NAME, localhost, $DOMAIN_NAME"
-postconf -e "home_mailbox = Maildir/"
-postconf -e "inet_interfaces = all"
-postconf -e "virtual_alias_maps = hash:/etc/postfix/virtual"
-postconf -e "smtpd_banner = \$myhostname ESMTP"
-
-# Dovecot tweaks
-sed -i 's/#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf || true
-sed -i 's/auth_mechanisms = plain/auth_mechanisms = plain login/' /etc/dovecot/conf.d/10-auth.conf || true
-sed -i 's|#mail_location = mbox:~/mail:INBOX=/var/mail/%u|mail_location = maildir:~/Maildir|g' /etc/dovecot/conf.d/10-mail.conf || true
-
-systemctl restart postfix || true
-systemctl restart dovecot || true
-systemctl enable postfix dovecot || true
-
-# -------------------------
-# OpenDKIM configuration & key generation
-# -------------------------
-log "Setting up OpenDKIM and generating keys..."
-mkdir -p /etc/opendkim/keys/$DOMAIN_NAME
-opendkim-genkey -D /etc/opendkim/keys/$DOMAIN_NAME/ -d $DOMAIN_NAME -s default || true
-chown -R opendkim:opendkim /etc/opendkim/keys/$DOMAIN_NAME || true
-
-cat > /etc/opendkim.conf <<EOF
-Syslog yes
-UMask 002
-Canonicalization relaxed/simple
-Mode sv
-Socket inet:8891@127.0.0.1
-PidFile /var/run/opendkim/opendkim.pid
-UserID opendkim:opendkim
-AutoRestart yes
-AutoRestartRate 10/1h
-ExternalIgnoreList refile:/etc/opendkim/TrustedHosts
-InternalHosts refile:/etc/opendkim/TrustedHosts
-KeyTable /etc/opendkim/KeyTable
-SigningTable /etc/opendkim/SigningTable
-TrustedHosts /etc/opendkim/TrustedHosts
-EOF
-
-cat > /etc/opendkim/TrustedHosts <<EOF
-127.0.0.1
-localhost
-$SERVER_IP
-EOF
-
-cat > /etc/opendkim/KeyTable <<EOF
-default._domainkey.$DOMAIN_NAME $DOMAIN_NAME:default:/etc/opendkim/keys/$DOMAIN_NAME/default.private
-EOF
-
-cat > /etc/opendkim/SigningTable <<EOF
-*@${DOMAIN_NAME} default._domainkey.${DOMAIN_NAME}
-EOF
-
-postconf -e "milter_default_action = accept"
-postconf -e "smtpd_milters = inet:127.0.0.1:8891"
-postconf -e "non_smtpd_milters = inet:127.0.0.1:8891"
-
-systemctl restart opendkim || true
-systemctl enable opendkim || true
-
-if [ -f /etc/opendkim/keys/$DOMAIN_NAME/default.txt ]; then
-  info "DKIM public key file generated at /etc/opendkim/keys/$DOMAIN_NAME/default.txt"
-  info "Add the TXT record shown below (selector: default) at your DNS registrar:"
-  sed -n '1,200p' /etc/opendkim/keys/$DOMAIN_NAME/default.txt || true
-fi
-
-# -------------------------
-# phpMyAdmin install (manual, fixed)
-# -------------------------
-log "Installing phpMyAdmin (manual)..."
-PMA_VERSION="5.2.1"
-cd /tmp || true
-rm -f phpMyAdmin-*-all-languages.zip || true
-wget -q "https://files.phpmyadmin.net/phpMyAdmin/${PMA_VERSION}/phpMyAdmin-${PMA_VERSION}-all-languages.zip"
-unzip -q phpMyAdmin-${PMA_VERSION}-all-languages.zip
-rm -rf /var/www/phpmyadmin || true
-mv phpMyAdmin-${PMA_VERSION}-all-languages /var/www/phpmyadmin
-rm phpMyAdmin-${PMA_VERSION}-all-languages.zip || true
-
-cp /var/www/phpmyadmin/config.sample.inc.php /var/www/phpmyadmin/config.inc.php
-sed -i "s/\\\$cfg\\['blowfish_secret'\\] = '';/\\\$cfg\\['blowfish_secret'\\] = '${PMA_BLOWFISH}';/" /var/www/phpmyadmin/config.inc.php
-echo "\$cfg['TempDir'] = '/var/www/phpmyadmin/tmp';" >> /var/www/phpmyadmin/config.inc.php
-mkdir -p /var/www/phpmyadmin/tmp
-chown -R www-data:www-data /var/www/phpmyadmin
-chmod -R 750 /var/www/phpmyadmin
-
-# -------------------------
-# Roundcube install & DB config
-# -------------------------
-log "Installing Roundcube and configuring database..."
-apt install -y roundcube roundcube-mysql php-net-smtp php-mail-mime || true
-
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DROP DATABASE IF EXISTS roundcubemail;" || true
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE roundcubemail DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;" || true
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${ROUNDCUBE_DB_PASS}';" || true
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost';" || true
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;" || true
-
-if [ -f "/usr/share/roundcube/SQL/mysql.initial.sql.gz" ]; then
-  zcat /usr/share/roundcube/SQL/mysql.initial.sql.gz | mysql -u roundcube -p"${ROUNDCUBE_DB_PASS}" roundcubemail || true
-elif [ -f "/usr/share/roundcube/SQL/mysql.initial.sql" ]; then
-  mysql -u roundcube -p"${ROUNDCUBE_DB_PASS}" roundcubemail < /usr/share/roundcube/SQL/mysql.initial.sql || true
-fi
-
-mkdir -p /etc/roundcube
-cat > /etc/roundcube/config.inc.php <<EOF
-<?php
-\$config['db_dsnw'] = 'mysql://roundcube:${ROUNDCUBE_DB_PASS}@localhost/roundcubemail';
-\$config['default_host'] = 'ssl://mail.${DOMAIN_NAME}';
-\$config['smtp_server'] = 'tls://mail.${DOMAIN_NAME}';
-\$config['smtp_port'] = 587;
-\$config['smtp_user'] = '%u';
-\$config['smtp_pass'] = '%p';
-\$config['support_url'] = '';
-\$config['product_name'] = 'SHM Webmail';
-\$config['des_key'] = '$(openssl rand -base64 24)';
-\$config['plugins'] = array('archive', 'zipdownload');
-\$config['skin'] = 'elastic';
-EOF
-
-ln -sf /usr/share/roundcube /var/www/webmail
-chown -R www-data:www-data /var/www/webmail
-chmod -R 750 /var/www/webmail
-
-# -------------------------
-# Nginx configuration (with correct alias handling)
-# -------------------------
-log "Creating Nginx site for $DOMAIN_NAME..."
-cat > /etc/nginx/sites-available/$DOMAIN_NAME <<EOF
-server {
-  listen 80;
-  server_name $DOMAIN_NAME www.$DOMAIN_NAME mail.$DOMAIN_NAME webmail.$DOMAIN_NAME ns1.$DOMAIN_NAME ns2.$DOMAIN_NAME;
-  root /var/www/shm-panel;
-  index index.php index.html;
-
-  # Main Panel
-  location / {
-    try_files \$uri \$uri/ /index.php?\$query_string;
-  }
-
-  # phpMyAdmin
-  location /phpmyadmin {
-    alias /var/www/phpmyadmin/;
-    index index.php;
-    try_files \$uri \$uri/ /phpmyadmin/index.php?\$args;
-  }
-  location ~ ^/phpmyadmin/(.+\.php)\$ {
-    alias /var/www/phpmyadmin/\$1;
-    fastcgi_pass $PHP_SOCKET;
-    fastcgi_index index.php;
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME /var/www/phpmyadmin/\$1;
-    fastcgi_param DOCUMENT_ROOT /var/www/phpmyadmin;
-  }
-
-  # Roundcube (webmail)
-  location /webmail {
-    alias /var/www/webmail/;
-    index index.php;
-    try_files \$uri \$uri/ /webmail/index.php?\$args;
-  }
-  location ~ ^/webmail/(.+\.php)\$ {
-    alias /var/www/webmail/\$1;
-    fastcgi_pass $PHP_SOCKET;
-    fastcgi_index index.php;
-    include fastcgi_params;
-    fastcgi_param SCRIPT_FILENAME /var/www/webmail/\$1;
-    fastcgi_param DOCUMENT_ROOT /var/www/webmail;
-  }
-
-  # Generic PHP processing
-  location ~ \.php\$ {
-    include snippets/fastcgi-php.conf;
-    fastcgi_pass $PHP_SOCKET;
-    fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-    include fastcgi_params;
-  }
-
-  # Security & caching
-  location ~ /\. { deny all; }
-  location ~* \.(jpg|jpeg|png|gif|ico|css|js)\$ { expires 30d; access_log off; log_not_found off; }
-  client_max_body_size 100M;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/$DOMAIN_NAME /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default || true
+# Create SHM Panel nginx configuration
+cat > /etc/nginx/sites-available/shm-panel << EOF
+server {
+    listen 80;
+    server_name _;
+    root /var/www/shm-panel;
+    index index.php index.html index.htm;
 
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+    # Main location
+    location / {
+        try_files \$uri \$uri/ /index.php?\$query_string;
+    }
+
+    # PHP handling
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    # Deny access to sensitive files
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~ /(config|logs|temp|uploads|install) {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    location ~ /\.env {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
+    # Cache static files
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|pdf|txt)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # File upload size
+    client_max_body_size 100M;
+    client_body_timeout 300;
+}
+EOF
+
+# Enable site
+ln -sf /etc/nginx/sites-available/shm-panel /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Create application directory
+log "Creating application directory..."
 mkdir -p /var/www/shm-panel
-echo "<?php phpinfo(); ?>" > /var/www/shm-panel/phpinfo.php
-chown -R $APP_USER:www-data /var/www/shm-panel || true
-chown -R www-data:www-data /var/www/webmail || true
-chmod 755 /var/www/shm-panel || true
+chown -R $APP_USER:www-data /var/www/shm-panel
+chmod 755 /var/www/shm-panel
 
-# -------------------------
-# fail2ban jails (basic)
-# -------------------------
-log "Configuring fail2ban jails..."
-cat > /etc/fail2ban/jail.d/custom.local <<EOF
-[sshd]
-enabled = true
-port    = $SSH_PORT
-filter  = sshd
-logpath = /var/log/auth.log
-maxretry = 6
+# Create log directory
+mkdir -p /var/log/shm-panel
+chown -R $APP_USER:www-data /var/log/shm-panel
 
-[postfix]
-enabled = true
-port = smtp,ssmtp,submission
-logpath = /var/log/mail.log
-maxretry = 6
+# Configure logrotate for application
+cat > /etc/logrotate.d/shm-panel << EOF
+/var/log/shm-panel/*.log {
+    daily
+    missingok
+    rotate 30
+    compress
+    delaycompress
+    notifempty
+    create 644 $APP_USER www-data
+    postrotate
+        systemctl reload nginx
+    endscript
+}
 EOF
 
-systemctl restart fail2ban || true
-
-# -------------------------
-# Restart services safely
-# -------------------------
-log "Restarting services (named, mariadb, php-fpm (if exists), nginx, postfix, dovecot, opendkim, fail2ban)..."
-systemctl daemon-reload || true
-systemctl restart named || true
-systemctl restart mariadb || true
-
-# restart php-fpm if versioned service exists
-if systemctl list-units --full -all | grep -q "php${PHP_VERSION}-fpm.service"; then
-  systemctl restart php${PHP_VERSION}-fpm || true
-fi
-
-systemctl restart nginx || true
-systemctl restart postfix || true
-systemctl restart dovecot || true
-systemctl restart opendkim || true
-systemctl restart fail2ban || true
-systemctl restart ssh || true
-
-# -------------------------
-# Helper scripts and final messages
-# -------------------------
-cat > /root/system-info.sh <<'EOF'
+# Create startup script
+cat > /root/startup-scripts.sh << 'EOF'
 #!/bin/bash
-echo "=== System Status ==="
-echo "Uptime: $(uptime -p)"
-echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
-echo "PHP Version: $(php -v | head -n1 2>/dev/null || echo 'php not found')"
-echo ""
-echo "=== Services ==="
-echo "Named: $(systemctl is-active named)"
+# Startup scripts for SHM Panel
+
+echo "Starting SHM Panel services..."
+
+# Start essential services
+systemctl start mysql
+systemctl start nginx
+systemctl start php8.1-fpm
+systemctl start fail2ban
+
+# Check service status
+echo "Service Status:"
+echo "MySQL: $(systemctl is-active mysql)"
 echo "Nginx: $(systemctl is-active nginx)"
-echo "MariaDB: $(systemctl is-active mariadb)"
-echo "Postfix: $(systemctl is-active postfix)"
-echo "Dovecot: $(systemctl is-active dovecot)"
-echo "OpenDKIM: $(systemctl is-active opendkim)"
+echo "PHP-FPM: $(systemctl is-active php8.1-fpm)"
 echo "Fail2Ban: $(systemctl is-active fail2ban)"
+
+# Display credentials (first run only)
+if [ -f /root/first-run ]; then
+    echo "=== SHM Panel First Run Information ==="
+    echo "Admin SSH User: $(grep 'Admin User' /root/server_credentials.txt | cut -d: -f2)"
+    echo "Admin SSH Password: $(grep 'Admin Password' /root/server_credentials.txt | cut -d: -f2)"
+    echo "App User: $(grep 'App User' /root/server_credentials.txt | cut -d: -f2)"
+    echo "App Password: $(grep 'App Password' /root/server_credentials.txt | cut -d: -f2)"
+    echo "MySQL Root Password: $(grep 'MySQL Root' /root/server_credentials.txt | cut -d: -f2)"
+    echo "======================================="
+    rm -f /root/first-run
+fi
 EOF
+
+chmod +x /root/startup-scripts.sh
+
+# Create system info script
+cat > /root/system-info.sh << 'EOF'
+#!/bin/bash
+echo "=== System Information ==="
+echo "Hostname: $(hostname)"
+echo "IP Address: $(hostname -I)"
+echo "Uptime: $(uptime -p)"
+echo "Load Average: $(uptime | awk -F'load average:' '{print $2}')"
+echo "Memory: $(free -h | grep Mem | awk '{print $3 "/" $2}')"
+echo "Disk: $(df -h / | awk 'NR==2 {print $3 "/" $2 " (" $5 ")"}')"
+echo ""
+echo "=== Service Status ==="
+echo "MySQL: $(systemctl is-active mysql)"
+echo "Nginx: $(systemctl is-active nginx)"
+echo "PHP-FPM: $(systemctl is-active php8.1-fpm)"
+echo "Fail2Ban: $(systemctl is-active fail2ban)"
+echo ""
+echo "=== Network ==="
+ufw status
+echo ""
+echo "=== Recent Logins ==="
+last -10
+EOF
+
 chmod +x /root/system-info.sh
 
-log "Setup script finished successfully (final stage)."
+# Create backup script
+cat > /root/backup-shm.sh << 'EOF'
+#!/bin/bash
+# Backup script for SHM Panel
 
-cat > /root/server_credentials.txt <<EOF
-=== SHM Panel Credentials ===
-Domain: $DOMAIN_NAME
-Server IP: $SERVER_IP
-Admin User: $ADMIN_USER
-(App User: $APP_USER)
-Admin Password: (saved earlier during creation)
-App User Password: $APP_USER_PASSWORD
-MySQL Root Password: $MYSQL_ROOT_PASSWORD
-Roundcube DB Password: $ROUNDCUBE_DB_PASS
-Mail User Password: $MAIL_USER_PASS
-SSH Port: $SSH_PORT
+BACKUP_DIR="/root/backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_NAME="shm-backup-$DATE"
+
+mkdir -p $BACKUP_DIR
+
+echo "Starting SHM Panel backup..."
+
+# Backup MySQL databases
+mysqldump --all-databases > $BACKUP_DIR/$BACKUP_NAME-mysql.sql
+gzip $BACKUP_DIR/$BACKUP_NAME-mysql.sql
+
+# Backup application files
+tar -czf $BACKUP_DIR/$BACKUP_NAME-files.tar.gz /var/www/shm-panel
+
+# Backup configurations
+tar -czf $BACKUP_DIR/$BACKUP_NAME-config.tar.gz /etc/nginx /etc/mysql /etc/php
+
+echo "Backup completed: $BACKUP_DIR/$BACKUP_NAME-*"
+echo "File sizes:"
+ls -lh $BACKUP_DIR/$BACKUP_NAME-*
+
+# Cleanup old backups (keep last 7 days)
+find $BACKUP_DIR -name "shm-backup-*" -mtime +7 -delete
 EOF
-chmod 600 /root/server_credentials.txt
 
-# Summary to user
-echo ""
-echo -e "${YELLOW}==============================================${NC}"
-echo -e "${GREEN}    INSTALLATION SUMMARY FOR $DOMAIN_NAME    ${NC}"
-echo -e "${YELLOW}==============================================${NC}"
-echo ""
-echo "1) Credentials saved: /root/server_credentials.txt"
-echo ""
-echo "2) Key URLs (after DNS propagation):"
-echo "   - Panel (phpinfo test): http://$DOMAIN_NAME/phpinfo.php"
-echo "   - phpMyAdmin:        http://$DOMAIN_NAME/phpmyadmin"
-echo "   - Roundcube:         http://$DOMAIN_NAME/webmail"
-echo ""
-echo "3) DNS actions REQUIRED at registrar:"
-echo "   - Create glue/child nameservers:"
-echo "       ns1.$DOMAIN_NAME -> $SERVER_IP"
-echo "       ns2.$DOMAIN_NAME -> $SERVER_IP"
-echo "   - Add TXT records:"
-echo "       SPF: v=spf1 mx a ip4:$SERVER_IP -all"
-echo "       DMARC: v=DMARC1; p=quarantine; rua=mailto:postmaster@$DOMAIN_NAME"
-echo "       DKIM: (see /etc/opendkim/keys/$DOMAIN_NAME/default.txt) — add as TXT for selector 'default._domainkey'"
-echo ""
-echo "4) SSL:"
-echo "   - After DNS propagation, run:"
-echo "       certbot --nginx -d $DOMAIN_NAME -d www.$DOMAIN_NAME -d mail.$DOMAIN_NAME -d webmail.$DOMAIN_NAME"
-echo ""
-echo "5) Troubleshooting tips:"
-echo "   - If phpMyAdmin blank page: ensure php-fpm running and Nginx uses correct socket ($PHP_SOCKET)"
-echo "   - Check logs: /var/log/nginx/error.log, /var/log/php*.log, /var/log/mail.log, /var/log/syslog"
-echo "   - Get system status: /root/system-info.sh"
-echo ""
-echo "6) Notes:"
-echo "   - This script makes mail delivery configuration but mail deliverability depends on correct DNS (SPF/DKIM/DMARC) + reverse PTR (set via host/hosting provider)."
-echo "   - For production, set monitoring, backups, stricter TLS for Postfix/Dovecot, and consider separate mail IP."
-echo ""
-echo -e "${GREEN}Done. Please add DNS records at your registrar and then run certbot after propagation.${NC}"
-echo ""
+chmod +x /root/backup-shm.sh
 
-# End of script
+# Create restore script
+cat > /root/restore-shm.sh << 'EOF'
+#!/bin/bash
+# Restore script for SHM Panel
+
+BACKUP_DIR="/root/backups"
+
+if [ -z "$1" ]; then
+    echo "Usage: $0 <backup-timestamp>"
+    echo "Available backups:"
+    ls $BACKUP_DIR/shp-backup-* 2>/dev/null | cut -d'-' -f3- | cut -d'.' -f1 | sort
+    exit 1
+fi
+
+BACKUP_NAME="shm-backup-$1"
+
+if [ ! -f "$BACKUP_DIR/$BACKUP_NAME-mysql.sql.gz" ]; then
+    echo "Backup not found: $BACKUP_NAME"
+    exit 1
+fi
+
+echo "Restoring SHM Panel from backup: $1"
+
+# Stop services
+systemctl stop nginx
+systemctl stop mysql
+
+# Restore MySQL
+gunzip -c $BACKUP_DIR/$BACKUP_NAME-mysql.sql.gz | mysql
+
+# Restore files
+tar -xzf $BACKUP_DIR/$BACKUP_NAME-files.tar.gz -C /
+
+# Restore configurations
+tar -xzf $BACKUP_DIR/$BACKUP_NAME-config.tar.gz -C /
+
+# Start services
+systemctl start mysql
+systemctl start nginx
+
+echo "Restore completed"
+EOF
+
+chmod +x /root/restore-shm.sh
+
+# Create monitoring script
+cat > /root/monitor-shm.sh << 'EOF'
+#!/bin/bash
+# Monitoring script for SHM Panel
+
+LOG_FILE="/var/log/shm-panel/monitor.log"
+ALERT_EMAIL="admin@localhost"
+
+# Create log directory if not exists
+mkdir -p /var/log/shm-panel
+
+{
+    echo "=== SHM Panel Health Check - $(date) ==="
+    
+    # Check services
+    for service in mysql nginx php8.1-fpm; do
+        if systemctl is-active --quiet $service; then
+            echo "✅ $service is running"
+        else
+            echo "❌ $service is NOT running"
+            systemctl restart $service
+            echo "Attempted to restart $service"
+        fi
+    done
+    
+    # Check disk space
+    DISK_USAGE=$(df -h / | awk 'NR==2 {print $5}' | cut -d'%' -f1)
+    if [ $DISK_USAGE -gt 90 ]; then
+        echo "⚠️  High disk usage: $DISK_USAGE%"
+    else
+        echo "✅ Disk usage: $DISK_USAGE%"
+    fi
+    
+    # Check memory
+    MEM_USAGE=$(free | awk 'NR==2{printf "%.2f", $3*100/$2}')
+    echo "Memory usage: $MEM_USAGE%"
+    
+    # Check load
+    LOAD=$(uptime | awk -F'load average:' '{print $2}')
+    echo "Load average: $LOAD"
+    
+    # Check MySQL connections
+    MYSQL_CONNECTIONS=$(mysql -e "SHOW STATUS LIKE 'Threads_connected'" | awk 'NR==2 {print $2}')
+    echo "MySQL connections: $MYSQL_CONNECTIONS"
+    
+} >> $LOG_FILE
+
+# Keep only last 1000 lines in log file
+tail -1000 $LOG_FILE > $LOG_FILE.tmp
+mv $LOG_FILE.tmp $LOG_FILE
+EOF
+
+chmod +x /root/monitor-shm.sh
+
+# Add to crontab for monitoring
+(crontab -l 2>/dev/null; echo "*/5 * * * * /root/monitor-shm.sh >/dev/null 2>&1") | crontab -
+(crontab -l 2>/dev/null; echo "0 2 * * * /root/backup-shm.sh >/dev/null 2>&1") | crontab -
+
+# Restart services
+log "Restarting services..."
+systemctl daemon-reload
+systemctl restart mysql
+systemctl restart nginx
+systemctl restart php$PHP_VERSION-fpm
+systemctl restart fail2ban
+systemctl restart ssh
+
+# Enable services to start on boot
+systemctl enable mysql nginx php$PHP_VERSION-fpm fail2ban ssh
+
+# Create first run flag
+touch /root/first-run
+
+# Display completion message
+log "VPS Server Setup Completed!"
+echo ""
+echo "=== IMPORTANT INFORMATION ==="
+echo "SSH Port: $SSH_PORT"
+echo "Admin User: $ADMIN_USER"
+echo "Admin Password: $(grep 'Admin Password' /root/server_credentials.txt | cut -d: -f2)"
+echo "App User: $APP_USER"
+echo "App Password: $(grep 'App Password' /root/server_credentials.txt | cut -d: -f2)"
+echo "MySQL Root Password: $(grep 'MySQL Root' /root/server_credentials.txt | cut -d: -f2)"
+echo ""
+echo "=== NEXT STEPS ==="
+echo "1. SSH to server: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP"
+echo "2. Upload SHM Panel files to /var/www/shm-panel"
+echo "3. Set proper permissions: chown -R $APP_USER:www-data /var/www/shm-panel"
+echo "4. Access SHM Panel at: http://$SERVER_IP"
+echo ""
+echo "Credentials saved to: /root/server_credentials.txt"
+echo "Use '/root/system-info.sh' to check system status"
+echo "Use '/root/backup-shm.sh' to create backups"
+
+# Save setup information
+cat > /root/setup-info.txt << EOF
+SHM Panel Server Setup
+======================
+Completed: $(date)
+Server IP: $SERVER_IP
+SSH Port: $SSH_PORT
+Admin User: $ADMIN_USER
+App User: $APP_USER
+Web Root: /var/www/shm-panel
+Database: MySQL (root password in server_credentials.txt)
+
+Useful Commands:
+- Check status: /root/system-info.sh
+- Backup: /root/backup-shm.sh
+- Restore: /root/restore-shm.sh <backup-timestamp>
+- Monitor: /root/monitor-shm.sh
+
+Services:
+- MySQL: systemctl status mysql
+- Nginx: systemctl status nginx
+- PHP-FPM: systemctl status php$PHP_VERSION-fpm
+- Fail2Ban: systemctl status fail2ban
+EOF
+
+log "Setup information saved to /root/setup-info.txt"
