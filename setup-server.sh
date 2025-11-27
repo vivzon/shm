@@ -1,49 +1,47 @@
 #!/bin/bash
 # ==========================================
-# SHM Panel Setup Script (Fixed & Hardened)
+# SHM Panel Setup Script (Final — Fixed & Hardened)
 # ==========================================
 # - Robust PHP detection & extension install
-# - Corrected Nginx alias + fastcgi for phpMyAdmin & Roundcube
+# - Correct Nginx alias + fastcgi for phpMyAdmin & Roundcube
 # - Postfix + Dovecot adjusted
-# - Bind9 zone + suggestions for SPF/DKIM/DMARC + OpenDKIM generation
+# - Bind9 zone + SPF/DKIM/DMARC assistance (OpenDKIM keys generated)
 # - Improved firewall & fail2ban basics
-# - Certbot automation attempt (manual DNS prerequisite)
+# - Certbot automation command provided (manual run after DNS)
+# - Uses 'named' service (systemd) instead of bind9 alias
 # ==========================================
 
 set -euo pipefail
+IFS=$'\n\t'
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+# Colors
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 
-log() { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"; }
-error() { echo -e "${RED}[ERROR] $1${NC}"; }
-warning() { echo -e "${YELLOW}[WARN] $1${NC}"; }
-info() { echo -e "${BLUE}[INFO] $1${NC}"; }
+log()    { echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"; }
+error()  { echo -e "${RED}[ERROR] $1${NC}"; }
+warning(){ echo -e "${YELLOW}[WARN] $1${NC}"; }
+info()   { echo -e "${BLUE}[INFO] $1${NC}"; }
 
-# Must be root
+# Must run as root
 if [ "$EUID" -ne 0 ]; then
-    error "Please run as root"
+    error "Please run this script as root."
     exit 1
 fi
 
 clear
 echo -e "${YELLOW}==============================================${NC}"
 echo -e "${YELLOW}   SHM Panel + DNS + Webmail + phpMyAdmin     ${NC}"
-echo -e "${YELLOW}   Fixed & Hardened Installer                 ${NC}"
+echo -e "${YELLOW}   Final Fixed & Hardened Installer           ${NC}"
 echo -e "${YELLOW}==============================================${NC}"
 echo ""
-read -p "Enter your Domain Name (e.g., example.com): " DOMAIN_NAME
 
+read -p "Enter your Domain Name (e.g., example.com): " DOMAIN_NAME
 if [ -z "$DOMAIN_NAME" ]; then
     error "Domain name is required."
     exit 1
 fi
 
-# Get public IP (fallbacks)
+# Determine public IP (attempt multiple methods)
 SERVER_IP=""
 if command -v curl &>/dev/null; then
     SERVER_IP=$(curl -s ifconfig.me || true)
@@ -52,21 +50,24 @@ if [ -z "$SERVER_IP" ]; then
     SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || true)
 fi
 if [ -z "$SERVER_IP" ]; then
-    error "Unable to determine server public IP. Please set SERVER_IP manually in script."
+    error "Unable to determine server public IP automatically. Set SERVER_IP variable in script and re-run."
     exit 1
 fi
 
+# Configurable defaults
 TIMEZONE="Asia/Kolkata"
 ADMIN_USER="shmadmin"
 SSH_PORT="2222"
-MYSQL_ROOT_PASSWORD=$(openssl rand -base64 32)
 APP_USER="shmuser"
+
+# Generated secrets
+MYSQL_ROOT_PASSWORD=$(openssl rand -base64 32)
 APP_USER_PASSWORD=$(openssl rand -base64 16)
 PMA_BLOWFISH=$(openssl rand -base64 32)
 ROUNDCUBE_DB_PASS=$(openssl rand -base64 24)
 MAIL_USER_PASS=$(openssl rand -base64 16)
 
-log "Starting Setup for $DOMAIN_NAME on IP $SERVER_IP"
+log "Starting setup for $DOMAIN_NAME on IP $SERVER_IP"
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -74,96 +75,87 @@ log "Updating system packages..."
 apt update -y
 apt upgrade -y
 
-# install core utilities
+log "Installing essential packages..."
 apt install -y software-properties-common curl wget git unzip htop gnupg2 lsb-release ufw fail2ban dialog apt-transport-https ca-certificates
 
-# Enable universe (Debian/Ubuntu)
+# Ensure universe on Ubuntu (safe)
 if [ -f /etc/lsb-release ]; then
     add-apt-repository universe -y || true
     apt update -y
 fi
 
 # -------------------------
-# PHP Detection & Installation (robust)
+# PHP detection & install
 # -------------------------
-log "Detecting PHP version (if installed)..."
+log "Detecting/Installing PHP..."
 PHP_VERSION=""
 if command -v php &>/dev/null; then
     PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
     info "Detected PHP CLI: $PHP_VERSION"
 fi
 
-# If php not present or no FPM socket found, install php-fpm (default) then detect socket
 if [ -z "$PHP_VERSION" ]; then
-    warning "PHP not found. Installing default php-fpm and CLI..."
+    warning "PHP not found — installing default php-fpm & cli..."
     apt install -y php-fpm php-cli
-    # detect after install
     if command -v php &>/dev/null; then
         PHP_VERSION=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')
     fi
 fi
 
-# if still empty try to detect php-fpm socket patterns
+# Fallback detection via socket files
 if [ -z "$PHP_VERSION" ]; then
-    # search /run/php for php*-fpm.sock
     if ls /run/php/php*-fpm.sock &>/dev/null; then
         PHP_VERSION=$(ls /run/php/php*-fpm.sock | sed -n 's#.*/php\([0-9]\+\.[0-9]\+\)-fpm.sock#\1#p' | head -n1)
     fi
 fi
 
 if [ -z "$PHP_VERSION" ]; then
-    # final fallback: assume 8.1
     PHP_VERSION="8.1"
-    warning "Unable to auto-detect PHP version; defaulting to $PHP_VERSION"
+    warning "Could not detect PHP version. Defaulting to $PHP_VERSION (you can change later)."
 fi
-
 info "Using PHP version: $PHP_VERSION"
 
-# Preferred list of per-version packages; try to install versioned packages and fallback to generic ones.
+# Try install versioned extensions; if fails, install generic packages
 PHP_EXT_VER="php${PHP_VERSION}-fpm php${PHP_VERSION}-mysql php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-mbstring php${PHP_VERSION}-xml php${PHP_VERSION}-zip php${PHP_VERSION}-bcmath php${PHP_VERSION}-intl php${PHP_VERSION}-soap php${PHP_VERSION}-ldap php${PHP_VERSION}-imagick"
 PHP_EXT_GEN="php-mysql php-curl php-gd php-mbstring php-xml php-zip php-bcmath php-intl php-soap php-ldap imagemagick php-imagick"
 
-log "Attempting to install PHP extensions for $PHP_VERSION..."
+log "Installing PHP extensions for $PHP_VERSION..."
 if apt install -y $PHP_EXT_VER 2>/tmp/phperr.log; then
     info "Installed versioned PHP extensions."
 else
-    warning "Versioned PHP packages failed; installing generic PHP extensions (see /tmp/phperr.log)."
+    warning "Versioned PHP extension install failed; installing generic extensions (see /tmp/phperr.log)."
     apt install -y $PHP_EXT_GEN
 fi
 
-# Determine PHP FPM socket path reliably
+# Determine PHP-FPM socket
 PHP_SOCKET=""
 if [ -S "/run/php/php${PHP_VERSION}-fpm.sock" ]; then
     PHP_SOCKET="unix:/run/php/php${PHP_VERSION}-fpm.sock"
 else
-    # pick any php*-fpm socket
     SOCK_PATH=$(ls /run/php/php*-fpm.sock 2>/dev/null | head -n1 || true)
     if [ -n "$SOCK_PATH" ]; then
-        SOCK_VER=$(echo "$SOCK_PATH" | sed -n 's#.*/php\([0-9]\+\.[0-9]\+\)-fpm.sock#\1#p')
         PHP_SOCKET="unix:$SOCK_PATH"
-        info "Using detected socket: $PHP_SOCKET (ver $SOCK_VER)"
+        info "Using detected PHP-FPM socket: $PHP_SOCKET"
     else
-        # fallback to 127.0.0.1:9000 if FPM uses TCP (rare)
         PHP_SOCKET="127.0.0.1:9000"
-        warning "PHP-FPM socket not found; using $PHP_SOCKET. Ensure php-fpm is running."
+        warning "PHP-FPM socket not found; using fallback $PHP_SOCKET"
     fi
 fi
-
-info "Final PHP socket: $PHP_SOCKET"
+info "PHP socket: $PHP_SOCKET"
 
 # -------------------------
-# Core services
+# Core services install
 # -------------------------
-log "Installing Nginx, MySQL, Bind9, Certbot, Postfix/Dovecot, OpenDKIM..."
+log "Installing Nginx, MariaDB, named (Bind9), mail stack, certbot, opendkim..."
 apt install -y nginx mariadb-server bind9 bind9utils bind9-doc dnsutils certbot python3-certbot-nginx postfix dovecot-core dovecot-imapd dovecot-pop3d opendkim opendkim-tools
 
-# set timezone
+# Timezone
 timedatectl set-timezone $TIMEZONE || true
 
 # -------------------------
-# User management
+# User creation and credentials
 # -------------------------
-log "Configuring users..."
+log "Creating users and saving credentials..."
 if ! id "$APP_USER" &>/dev/null; then
     useradd -m -s /bin/bash "$APP_USER" || true
     echo "$APP_USER:$APP_USER_PASSWORD" | chpasswd
@@ -190,13 +182,13 @@ Mail User ($ADMIN_USER@$DOMAIN_NAME): $MAIL_USER_PASS
 SSH Port: $SSH_PORT
 EOF
     chmod 600 "$CRED_FILE"
-    info "Credentials saved to $CRED_FILE"
+    info "Saved credentials to $CRED_FILE"
 fi
 
 # -------------------------
-# Firewall
+# UFW firewall
 # -------------------------
-log "Configuring firewall (ufw)..."
+log "Configuring UFW firewall..."
 ufw --force reset
 ufw default deny incoming
 ufw default allow outgoing
@@ -205,7 +197,6 @@ ufw allow 80/tcp
 ufw allow 443/tcp
 ufw allow 53/tcp
 ufw allow 53/udp
-# mail ports
 ufw allow 25/tcp
 ufw allow 465/tcp
 ufw allow 587/tcp
@@ -214,9 +205,9 @@ ufw allow 993/tcp
 ufw --force enable
 
 # -------------------------
-# SSH Hardening
+# SSH configuration (safer reload)
 # -------------------------
-log "Configuring SSH on Port $SSH_PORT..."
+log "Hardening SSH and reloading safely..."
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup.$(date +%F) || true
 
 cat > /etc/ssh/sshd_config << EOF
@@ -238,19 +229,17 @@ ClientAliveCountMax 2
 AllowUsers $ADMIN_USER $APP_USER
 EOF
 
-# reload ssh safely to avoid accidental lockout; do not exit on failure
+# reload ssh; if something goes wrong, keep session alive (do not exit if fails)
 systemctl reload ssh || systemctl restart ssh || true
 
 # -------------------------
-# MySQL / MariaDB secure basic setup
+# MariaDB secure basics
 # -------------------------
-log "Configuring MySQL/MariaDB..."
+log "Securing MariaDB / MySQL..."
 systemctl enable mariadb
 systemctl start mariadb
 
-# Use mysql commands to secure & set root password (MariaDB's unix_socket plugin must be considered)
-# Create root password by setting the root user's password for mysql_native_password if required
-# For MariaDB 10+ root plugin may be unix_socket - this forces plaintext password login change
+# apply hardening SQL (best effort)
 mysql <<EOF || true
 ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASSWORD}';
 DELETE FROM mysql.user WHERE User='';
@@ -268,9 +257,10 @@ EOF
 chmod 600 /root/.my.cnf
 
 # -------------------------
-# Bind9 DNS
+# Bind9 (named) configuration & zone
 # -------------------------
-log "Configuring Bind9 (local authoritative for $DOMAIN_NAME)..."
+log "Configuring named (Bind9) authoritative zone for $DOMAIN_NAME..."
+
 cat > /etc/bind/named.conf.options << EOF
 acl "trusted" {
     127.0.0.1;
@@ -324,28 +314,26 @@ mysql   IN      A       $SERVER_IP
 ; MX record
 @       IN      MX      10 mail.$DOMAIN_NAME.
 
-; Basic SPF (REVIEW: adjust as needed)
+; Basic SPF (REVIEW & adjust if you use other mail providers)
 @       IN      TXT     "v=spf1 mx a ip4:$SERVER_IP -all"
+
 ; Basic DMARC (REVIEW: adjust reporting addresses)
 _dmarc  IN      TXT     "v=DMARC1; p=quarantine; rua=mailto:postmaster@$DOMAIN_NAME; ruf=mailto:postmaster@$DOMAIN_NAME; fo=1"
 EOF
 
 named-checkconf || true
 named-checkzone "$DOMAIN_NAME" /etc/bind/zones/db.$DOMAIN_NAME || true
-systemctl restart bind9
-systemctl enable bind9
+systemctl restart named || true
+systemctl enable named || true
 
 # -------------------------
-# Postfix + Dovecot basic config
+# Postfix + Dovecot setup
 # -------------------------
-log "Configuring Mail Stack (Postfix + Dovecot)..."
-
-# Preseed Postfix (Internet Site)
+log "Installing/configuring Postfix & Dovecot..."
 debconf-set-selections <<< "postfix postfix/mailname string $DOMAIN_NAME"
 debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
-apt install -y postfix
+apt install -y postfix dovecot-core dovecot-imapd dovecot-pop3d || true
 
-# Postfix basic settings
 postconf -e "myhostname = mail.$DOMAIN_NAME"
 postconf -e "mydestination = \$myhostname, localhost.$DOMAIN_NAME, localhost, $DOMAIN_NAME"
 postconf -e "home_mailbox = Maildir/"
@@ -353,20 +341,19 @@ postconf -e "inet_interfaces = all"
 postconf -e "virtual_alias_maps = hash:/etc/postfix/virtual"
 postconf -e "smtpd_banner = \$myhostname ESMTP"
 
-# Dovecot adjustments
+# Dovecot adjustments (basic)
 sed -i 's/#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf || true
 sed -i 's/auth_mechanisms = plain/auth_mechanisms = plain login/' /etc/dovecot/conf.d/10-auth.conf || true
-# set mail location to Maildir
 sed -i 's|#mail_location = mbox:~/mail:INBOX=/var/mail/%u|mail_location = maildir:~/Maildir|g' /etc/dovecot/conf.d/10-mail.conf || true
 
 systemctl restart postfix || true
 systemctl restart dovecot || true
-systemctl enable postfix dovecot
+systemctl enable postfix dovecot || true
 
 # -------------------------
-# OpenDKIM (generate keys & integrate with Postfix)
+# OpenDKIM: generate keys, configure, and integrate with Postfix
 # -------------------------
-log "Configuring OpenDKIM for DKIM signing..."
+log "Setting up OpenDKIM (DKIM signing)..."
 mkdir -p /etc/opendkim/keys/$DOMAIN_NAME
 opendkim-genkey -D /etc/opendkim/keys/$DOMAIN_NAME/ -d $DOMAIN_NAME -s default || true
 chown -R opendkim:opendkim /etc/opendkim/keys/$DOMAIN_NAME || true
@@ -388,43 +375,34 @@ SigningTable /etc/opendkim/SigningTable
 TrustedHosts /etc/opendkim/TrustedHosts
 EOF
 
-# TrustedHosts
 cat > /etc/opendkim/TrustedHosts << EOF
 127.0.0.1
 localhost
 $SERVER_IP
 EOF
 
-# KeyTable
 cat > /etc/opendkim/KeyTable << EOF
 default._domainkey.$DOMAIN_NAME $DOMAIN_NAME:default:/etc/opendkim/keys/$DOMAIN_NAME/default.private
 EOF
 
-# SigningTable
 cat > /etc/opendkim/SigningTable << EOF
 *@${DOMAIN_NAME} default._domainkey.${DOMAIN_NAME}
 EOF
 
-# Ensure Postfix integrates with opendkim
 postconf -e "milter_default_action = accept"
 postconf -e "smtpd_milters = inet:127.0.0.1:8891"
 postconf -e "non_smtpd_milters = inet:127.0.0.1:8891"
 
 systemctl restart opendkim || true
-systemctl enable opendkim
+systemctl enable opendkim || true
 
-# Print DKIM public TXT for registrar - user should add this TXT
-DKIM_PUB=$(awk '/^default._domainkey/ {print $0; exit}' /etc/opendkim/keys/$DOMAIN_NAME/default.txt 2>/dev/null || true)
 if [ -f /etc/opendkim/keys/$DOMAIN_NAME/default.txt ]; then
-    info "DKIM key generated at /etc/opendkim/keys/$DOMAIN_NAME/default.txt"
-    info "Add this TXT record at your registrar:"
-    echo "---- DKIM TXT (paste as single line) ----"
+    info "DKIM public key generated; add this TXT record at your registrar for selector 'default':"
     sed -n '1,200p' /etc/opendkim/keys/$DOMAIN_NAME/default.txt || true
-    echo "-----------------------------------------"
 fi
 
 # -------------------------
-# phpMyAdmin manual install
+# phpMyAdmin manual install (fixed)
 # -------------------------
 log "Installing phpMyAdmin..."
 PMA_VERSION="5.2.1"
@@ -444,16 +422,16 @@ chown -R www-data:www-data /var/www/phpmyadmin
 chmod -R 750 /var/www/phpmyadmin
 
 # -------------------------
-# Roundcube (via apt) and DB
+# Roundcube install & DB config
 # -------------------------
-log "Installing Roundcube (webmail)..."
+log "Installing Roundcube (webmail) and configuring DB..."
 apt install -y roundcube roundcube-mysql php-net-smtp php-mail-mime || true
 
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DROP DATABASE IF EXISTS roundcubemail;"
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE roundcubemail DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;"
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${ROUNDCUBE_DB_PASS}';"
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost';"
-mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;"
+mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "DROP DATABASE IF EXISTS roundcubemail;" || true
+mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE DATABASE roundcubemail DEFAULT CHARACTER SET utf8 COLLATE utf8_general_ci;" || true
+mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "CREATE USER IF NOT EXISTS 'roundcube'@'localhost' IDENTIFIED BY '${ROUNDCUBE_DB_PASS}';" || true
+mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "GRANT ALL PRIVILEGES ON roundcubemail.* TO 'roundcube'@'localhost';" || true
+mysql -u root -p"${MYSQL_ROOT_PASSWORD}" -e "FLUSH PRIVILEGES;" || true
 
 if [ -f "/usr/share/roundcube/SQL/mysql.initial.sql.gz" ]; then
     zcat /usr/share/roundcube/SQL/mysql.initial.sql.gz | mysql -u roundcube -p"${ROUNDCUBE_DB_PASS}" roundcubemail || true
@@ -482,10 +460,9 @@ chown -R www-data:www-data /var/www/webmail
 chmod -R 750 /var/www/webmail
 
 # -------------------------
-# Nginx configuration (fixed alias + SCRIPT_FILENAME handling)
+# Nginx site config (with correct alias handling)
 # -------------------------
-log "Configuring Nginx..."
-
+log "Creating Nginx site configuration..."
 cat > /etc/nginx/sites-available/$DOMAIN_NAME << EOF
 server {
     listen 80;
@@ -498,13 +475,12 @@ server {
         try_files \$uri \$uri/ /index.php?\$query_string;
     }
 
-    # phpMyAdmin - using alias + correct fastcgi param
+    # phpMyAdmin
     location /phpmyadmin {
         alias /var/www/phpmyadmin/;
         index index.php;
         try_files \$uri \$uri/ /phpmyadmin/index.php?\$args;
     }
-
     location ~ ^/phpmyadmin/(.+\.php)\$ {
         alias /var/www/phpmyadmin/\$1;
         fastcgi_pass $PHP_SOCKET;
@@ -514,13 +490,12 @@ server {
         fastcgi_param DOCUMENT_ROOT /var/www/phpmyadmin;
     }
 
-    # Roundcube /webmail
+    # Roundcube (webmail)
     location /webmail {
         alias /var/www/webmail/;
         index index.php;
         try_files \$uri \$uri/ /webmail/index.php?\$args;
     }
-
     location ~ ^/webmail/(.+\.php)\$ {
         alias /var/www/webmail/\$1;
         fastcgi_pass $PHP_SOCKET;
@@ -530,7 +505,7 @@ server {
         fastcgi_param DOCUMENT_ROOT /var/www/webmail;
     }
 
-    # Generic PHP processing for other PHP files under site root
+    # PHP processing for other PHP files
     location ~ \.php\$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass $PHP_SOCKET;
@@ -538,7 +513,7 @@ server {
         include fastcgi_params;
     }
 
-    # Security & Caching
+    # Security & caching
     location ~ /\. { deny all; }
     location ~* \.(jpg|jpeg|png|gif|ico|css|js)\$ { expires 30d; access_log off; log_not_found off; }
     client_max_body_size 100M;
@@ -550,14 +525,14 @@ rm -f /etc/nginx/sites-enabled/default || true
 
 mkdir -p /var/www/shm-panel
 echo "<?php phpinfo(); ?>" > /var/www/shm-panel/phpinfo.php
-chown -R $APP_USER:www-data /var/www/shm-panel
-chown -R www-data:www-data /var/www/webmail
-chmod 755 /var/www/shm-panel
+chown -R $APP_USER:www-data /var/www/shm-panel || true
+chown -R www-data:www-data /var/www/webmail || true
+chmod 755 /var/www/shm-panel || true
 
 # -------------------------
-# fail2ban basic jail for ssh and postfix
+# fail2ban basic jails
 # -------------------------
-log "Configuring fail2ban basic jails..."
+log "Configuring fail2ban jails for ssh & postfix..."
 cat > /etc/fail2ban/jail.d/custom.local << EOF
 [sshd]
 enabled = true
@@ -576,13 +551,16 @@ EOF
 systemctl restart fail2ban || true
 
 # -------------------------
-# Restart services
+# Restart key services (safe)
 # -------------------------
 log "Restarting services..."
 systemctl daemon-reload || true
-systemctl restart bind9 || true
+systemctl restart named || true
 systemctl restart mariadb || true
-systemctl restart php${PHP_VERSION}-fpm || true || true
+# restart php-fpm service if available
+if systemctl list-units --full -all | grep -q "php${PHP_VERSION}-fpm.service"; then
+    systemctl restart php${PHP_VERSION}-fpm || true
+fi
 systemctl restart nginx || true
 systemctl restart postfix || true
 systemctl restart dovecot || true
@@ -590,7 +568,9 @@ systemctl restart opendkim || true
 systemctl restart fail2ban || true
 systemctl restart ssh || true
 
-# Create system-info script
+# -------------------------
+# System info helper
+# -------------------------
 cat > /root/system-info.sh << 'EOF'
 #!/bin/bash
 echo "=== System Status ==="
@@ -600,43 +580,52 @@ echo "PHP Version: $(php -v | head -n 1 2>/dev/null || echo 'php not found')"
 echo ""
 echo "=== Services ==="
 echo "Nginx: $(systemctl is-active nginx)"
-echo "MySQL/MariaDB: $(systemctl is-active mariadb)"
-echo "PHP-FPM: $(systemctl is-active php*-fpm 2>/dev/null || true)"
-echo "Bind9: $(systemctl is-active bind9)"
+echo "MariaDB: $(systemctl is-active mariadb)"
+echo "PHP-FPM (service):"
+systemctl list-units --type=service --state=running | grep php || true
+echo "Named: $(systemctl is-active named)"
 echo "Postfix: $(systemctl is-active postfix)"
 echo "Dovecot: $(systemctl is-active dovecot)"
 echo "OpenDKIM: $(systemctl is-active opendkim)"
-echo ""
 EOF
 chmod +x /root/system-info.sh
 
-log "Setup Completed (script finished)."
+log "Script execution finished."
 
-echo ""
-echo -e "${YELLOW}==============================================${NC}"
-echo -e "${GREEN}       INSTALLATION SCRIPT FINISHED FOR $DOMAIN_NAME ${NC}"
-echo -e "${YELLOW}==============================================${NC}"
-echo ""
-echo "Important next steps (manual & registrar):"
-echo "1) Add glue records at your domain registrar:"
-echo "   ns1.$DOMAIN_NAME -> $SERVER_IP"
-echo "   ns2.$DOMAIN_NAME -> $SERVER_IP"
-echo ""
-echo "2) Add DNS TXT records (SPF/DKIM/DMARC):"
-echo "   - SPF:    v=spf1 mx a ip4:$SERVER_IP -all"
-echo "   - DKIM:   (see generated file /etc/opendkim/keys/$DOMAIN_NAME/default.txt )"
-echo "   - DMARC:  v=DMARC1; p=quarantine; rua=mailto:postmaster@$DOMAIN_NAME"
-echo ""
-echo "3) Obtain SSL certs (after DNS propagates):"
-echo "   certbot --nginx -d $DOMAIN_NAME -d www.$DOMAIN_NAME -d mail.$DOMAIN_NAME -d webmail.$DOMAIN_NAME"
-echo ""
-echo "4) phpMyAdmin: http://$DOMAIN_NAME/phpmyadmin"
-echo "   Roundcube: http://$DOMAIN_NAME/webmail"
-echo "   Panel: http://$DOMAIN_NAME/"
-echo ""
-echo "5) Credentials saved at: /root/server_credentials.txt"
-echo ""
-echo "If anything fails, run: /root/system-info.sh to check service status."
-echo ""
+cat <<EOF
 
-# End of script
+==============================================
+INSTALLATION SUMMARY FOR $DOMAIN_NAME
+==============================================
+
+1) Credentials saved: /root/server_credentials.txt
+
+2) Services & URLs:
+   - Panel:     http://$DOMAIN_NAME/
+   - phpMyAdmin: http://$DOMAIN_NAME/phpmyadmin
+   - Webmail(Roundcube): http://$DOMAIN_NAME/webmail
+
+3) DNS (registrar actions required):
+   - Add glue records:
+       ns1.$DOMAIN_NAME -> $SERVER_IP
+       ns2.$DOMAIN_NAME -> $SERVER_IP
+   - Add TXT records (SPF/DKIM/DMARC):
+       SPF : v=spf1 mx a ip4:$SERVER_IP -all
+       DKIM: (see /etc/opendkim/keys/$DOMAIN_NAME/default.txt)
+       DMARC: v=DMARC1; p=quarantine; rua=mailto:postmaster@$DOMAIN_NAME
+
+4) SSL:
+   After DNS propagation, run:
+     certbot --nginx -d $DOMAIN_NAME -d www.$DOMAIN_NAME -d mail.$DOMAIN_NAME -d webmail.$DOMAIN_NAME
+
+5) Helpful commands:
+   - Check service status: systemctl status named nginx postfix dovecot mariadb opendkim
+   - If phpMyAdmin blank page: ensure php-fpm is running and Nginx uses right socket
+   - System info: /root/system-info.sh
+
+6) Notes & TODOs (please review):
+   - Review /etc/opendkim/keys/$DOMAIN_NAME/default.txt and add DKIM TXT at registrar.
+   - If you use external mail providers, adjust SPF accordingly.
+   - For production: strongly consider using separate mail server IP, monitoring, backups, and stricter Postfix/Dovecot TLS policies.
+
+EOF
