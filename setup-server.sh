@@ -1,8 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# SHM Panel - Ultimate VPS Setup Script
-# Features: LEMP + DNS + Mail (Postfix/Dovecot) + phpMyAdmin + Roundcube
+# SHM Panel - Ultimate VPS Setup Script (Updated)
 # ==============================================================================
 
 # Colors
@@ -24,7 +23,7 @@ if [ "$EUID" -ne 0 ]; then error "Please run as root"; exit 1; fi
 # ------------------------------------------------------------------------------
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
-HOSTNAME=$(hostname)
+HOSTNAME=$(hostname -f) # Uses FQDN (e.g., server.sellvell.com)
 TIMEZONE="Asia/Kolkata"
 SSH_PORT="2222"
 
@@ -32,19 +31,17 @@ SSH_PORT="2222"
 MYSQL_ROOT_PASS=$(openssl rand -base64 32)
 ADMIN_USER="shmadmin"
 ADMIN_PASS=$(openssl rand -base64 16)
-APP_USER="shmuser"
-APP_PASS=$(openssl rand -base64 16)
 
 # Database Credentials
 DB_MAIN_NAME="shm_panel"
-DB_RC_NAME="roundcubemail" # For Webmail
+DB_RC_NAME="roundcubemail" 
 DB_USER="shm_db_user"
 DB_PASS=$(openssl rand -base64 24)
 
 # Blowfish Secret for phpMyAdmin
 PMA_SECRET=$(openssl rand -hex 16)
 
-log "Starting Installation on $SERVER_IP..."
+log "Starting Installation on $SERVER_IP ($HOSTNAME)..."
 
 # ------------------------------------------------------------------------------
 # 2. System Updates & Dependencies
@@ -54,7 +51,7 @@ log "Updating system..."
 export DEBIAN_FRONTEND=noninteractive
 apt update && apt upgrade -y
 
-# Pre-configure Postfix to avoid prompts
+# Pre-configure Postfix
 echo "postfix postfix/main_mailer_type string 'Internet Site'" | debconf-set-selections
 echo "postfix postfix/mailname string $HOSTNAME" | debconf-set-selections
 
@@ -70,7 +67,7 @@ apt install -y \
 timedatectl set-timezone $TIMEZONE
 
 # ------------------------------------------------------------------------------
-# 3. PHP Setup (Dynamic Version)
+# 3. PHP Setup
 # ------------------------------------------------------------------------------
 
 log "Installing PHP..."
@@ -92,12 +89,11 @@ date.timezone = "$TIMEZONE"
 EOF
 
 # ------------------------------------------------------------------------------
-# 4. DNS Server (Bind9) Setup
+# 4. DNS Server (Bind9)
 # ------------------------------------------------------------------------------
 
 log "Configuring Bind9 (DNS)..."
 
-# Allow query from any (it's a public nameserver)
 cat > /etc/bind/named.conf.options << EOF
 options {
     directory "/var/cache/bind";
@@ -112,32 +108,29 @@ systemctl restart bind9
 systemctl enable bind9
 
 # ------------------------------------------------------------------------------
-# 5. Mail Server (Postfix + Dovecot)
+# 5. Mail Server
 # ------------------------------------------------------------------------------
 
 log "Configuring Postfix & Dovecot..."
 
-# Postfix (SMTP)
 postconf -e "myhostname = $HOSTNAME"
 postconf -e "inet_interfaces = all"
 postconf -e "inet_protocols = all"
 postconf -e "home_mailbox = Maildir/"
 systemctl restart postfix
 
-# Dovecot (IMAP)
-# Enable plaintext auth (needed for local simple login initially)
 sed -i 's/#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
 sed -i 's/mail_location = mbox:~/mail_location = maildir:~\/Maildir/' /etc/dovecot/conf.d/10-mail.conf
 systemctl restart dovecot
 
 # ------------------------------------------------------------------------------
-# 6. Database Setup
+# 6. Database Setup (Updated Schema)
 # ------------------------------------------------------------------------------
 
 log "Configuring MySQL..."
 systemctl start mysql
 
-# Secure MySQL
+# Secure MySQL & Create Users
 mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$MYSQL_ROOT_PASS';"
 mysql -e "DELETE FROM mysql.user WHERE User='';"
 mysql -e "DROP DATABASE IF EXISTS test;"
@@ -151,14 +144,14 @@ password=$MYSQL_ROOT_PASS
 EOF
 chmod 600 /root/.my.cnf
 
-# Create Databases (Panel + Roundcube)
+# Create Databases
 mysql -e "CREATE DATABASE IF NOT EXISTS $DB_MAIN_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -e "CREATE DATABASE IF NOT EXISTS $DB_RC_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 mysql -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASS';"
 mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$DB_USER'@'localhost' WITH GRANT OPTION;"
 mysql -e "FLUSH PRIVILEGES;"
 
-# Import Panel Schema
+# Import Panel Schema (UPDATED with parent_id for Subdomains)
 cat > /root/schema.sql << 'EOSQL'
 SET FOREIGN_KEY_CHECKS=0;
 CREATE TABLE IF NOT EXISTS `users` (
@@ -176,12 +169,23 @@ CREATE TABLE IF NOT EXISTS `users` (
   PRIMARY KEY (`id`), UNIQUE KEY `username` (`username`), UNIQUE KEY `email` (`email`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `user_permissions` (
+  `id` int(11) NOT NULL AUTO_INCREMENT,
+  `user_id` int(11) NOT NULL,
+  `permission` varchar(50) NOT NULL,
+  `allowed` tinyint(1) DEFAULT '1',
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  CONSTRAINT `user_permissions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `domains` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `user_id` int(11) NOT NULL,
+  `parent_id` int(11) DEFAULT NULL,
   `domain_name` varchar(255) NOT NULL,
   `document_root` varchar(500) NOT NULL,
-  `php_version` varchar(10) DEFAULT '8.4',
+  `php_version` varchar(10) DEFAULT '8.2',
   `ssl_enabled` tinyint(1) DEFAULT '0',
   `expiry_date` date DEFAULT NULL,
   `status` enum('active','suspended') NOT NULL DEFAULT 'active',
@@ -202,7 +206,7 @@ CREATE TABLE IF NOT EXISTS `hosting_plans` (
   PRIMARY KEY (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Admin: admin / admin123
+-- Insert Admin (Password: password) for initial login
 INSERT IGNORE INTO `users` (`username`, `email`, `password`, `role`, `status`) VALUES 
 ('admin', 'admin@localhost', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'superadmin', 'active');
 INSERT IGNORE INTO `hosting_plans` (`name`, `disk_space_mb`) VALUES ('Basic', 1000);
@@ -213,10 +217,11 @@ mysql $DB_MAIN_NAME < /root/schema.sql
 rm /root/schema.sql
 
 # ------------------------------------------------------------------------------
-# 7. Install phpMyAdmin
+# 7. Install phpMyAdmin & Roundcube
 # ------------------------------------------------------------------------------
+log "Installing Web Apps..."
 
-log "Installing phpMyAdmin..."
+# --- phpMyAdmin ---
 mkdir -p /var/www/html/phpmyadmin
 cd /tmp
 wget https://files.phpmyadmin.net/phpMyAdmin/5.2.1/phpMyAdmin-5.2.1-all-languages.zip
@@ -234,18 +239,10 @@ cat > /var/www/html/phpmyadmin/config.inc.php << EOF
 \$cfg['Servers'][\$i]['host'] = 'localhost';
 \$cfg['Servers'][\$i]['compress'] = false;
 \$cfg['Servers'][\$i]['AllowNoPassword'] = false;
-\$cfg['UploadDir'] = '';
-\$cfg['SaveDir'] = '';
 ?>
 EOF
 
-chown -R www-data:www-data /var/www/html/phpmyadmin
-
-# ------------------------------------------------------------------------------
-# 8. Install Roundcube (Webmail)
-# ------------------------------------------------------------------------------
-
-log "Installing Roundcube..."
+# --- Roundcube ---
 mkdir -p /var/www/html/webmail
 cd /tmp
 wget https://github.com/roundcube/roundcubemail/releases/download/1.6.6/roundcubemail-1.6.6-complete.tar.gz
@@ -253,12 +250,8 @@ tar -xzf roundcubemail-1.6.6-complete.tar.gz
 cp -r roundcubemail-1.6.6/* /var/www/html/webmail/
 rm -rf roundcubemail*
 
-# Configure Roundcube
 cd /var/www/html/webmail
-# Import initial DB schema
 mysql $DB_RC_NAME < SQL/mysql.initial.sql
-
-# Write config
 cat > config/config.inc.php << EOF
 <?php
 \$config['db_dsnw'] = 'mysql://$DB_USER:$DB_PASS@localhost/$DB_RC_NAME';
@@ -267,25 +260,35 @@ cat > config/config.inc.php << EOF
 \$config['smtp_port'] = 25;
 \$config['smtp_user'] = '%u';
 \$config['smtp_pass'] = '%p';
-\$config['support_url'] = '';
 \$config['product_name'] = 'SHM Webmail';
 \$config['des_key'] = '$(openssl rand -hex 12)';
 \$config['plugins'] = ['archive', 'zipdownload'];
 ?>
 EOF
 
-chown -R www-data:www-data /var/www/html/webmail
+chown -R www-data:www-data /var/www/html
+
+# ------------------------------------------------------------------------------
+# 8. SUDO Privileges (CRITICAL FOR CONTROL PANEL)
+# ------------------------------------------------------------------------------
+log "Configuring Sudo Permissions for Panel..."
+
+# This allows PHP to create users, reload Nginx, etc.
+cat > /etc/sudoers.d/shm-panel << EOF
+www-data ALL=(ALL) NOPASSWD: /usr/sbin/nginx, /bin/systemctl reload nginx, /usr/bin/mv, /usr/bin/cp, /usr/bin/rm, /usr/bin/chown, /usr/bin/ln, /usr/bin/mkdir, /usr/bin/chmod
+EOF
+chmod 0440 /etc/sudoers.d/shm-panel
 
 # ------------------------------------------------------------------------------
 # 9. Nginx Configuration
 # ------------------------------------------------------------------------------
-
 log "Configuring Nginx..."
 
-cat > /etc/nginx/sites-available/shm-panel << EOF
+# Main Panel Config (Specific Hostname)
+cat > /etc/nginx/sites-available/$HOSTNAME << EOF
 server {
     listen 80;
-    server_name _;
+    server_name $HOSTNAME;
     root /var/www/shm-panel;
     index index.php index.html;
 
@@ -307,7 +310,7 @@ server {
         }
     }
 
-    # --- Webmail (Roundcube) ---
+    # --- Webmail ---
     location /webmail {
         root /var/www/html;
         index index.php;
@@ -320,89 +323,86 @@ server {
         }
     }
 
-    # --- PHP Handling for Panel ---
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:$PHP_SOCK;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
-        include fastcgi_params;
     }
 
     location ~ /\. { deny all; }
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/shm-panel /etc/nginx/sites-enabled/
+# Enable Site & Disable Default
+ln -sf /etc/nginx/sites-available/$HOSTNAME /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
 # Setup Main Panel Directory
 mkdir -p /var/www/shm-panel
-echo "<?php echo '<h1>SHM Panel Installed</h1>'; ?>" > /var/www/shm-panel/index.php
+# Place a placeholder index.php
+echo "<?php header('Location: /login'); ?>" > /var/www/shm-panel/index.php
 chown -R www-data:www-data /var/www/shm-panel
 
 # ------------------------------------------------------------------------------
-# 10. Security & Users
+# 10. Security & Finalize
 # ------------------------------------------------------------------------------
+log "Finalizing..."
 
-log "Finalizing Security..."
-
-# Add System Users
+# Add Admin User (System Level)
 if ! id "$ADMIN_USER" &>/dev/null; then
     useradd -m -s /bin/bash $ADMIN_USER
     echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
     usermod -aG sudo $ADMIN_USER
 fi
 
-# Configure SSH
+# SSH Config
 sed -i "s/#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-sed -i "s/PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
-echo "AllowUsers $ADMIN_USER" >> /etc/ssh/sshd_config
+# Note: Keeping Root Login enabled via Key is recommended, but disabling password
+# sed -i "s/PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
+echo "AllowUsers $ADMIN_USER root" >> /etc/ssh/sshd_config
 
-# Configure Firewall (Open DNS and Mail ports)
+# Firewall
 ufw default deny incoming
 ufw default allow outgoing
 ufw allow $SSH_PORT/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw allow 53  # DNS
-ufw allow 25  # SMTP
-ufw allow 143 # IMAP
-ufw allow 587 # Submission
+ufw allow 53
+ufw allow 25
+ufw allow 143
+ufw allow 587
 ufw --force enable
 
-# Save Credentials
+# Save Info
 cat > /root/server_credentials.txt << EOF
 === SHM Panel Credentials ===
+Hostname:  $HOSTNAME
 Server IP: $SERVER_IP
 SSH Port:  $SSH_PORT
 
-[Login]
-SSH User:  $ADMIN_USER
-SSH Pass:  $ADMIN_PASS
-
 [Services]
-phpMyAdmin: http://$SERVER_IP/phpmyadmin
-Webmail:    http://$SERVER_IP/webmail
-Main Panel: http://$SERVER_IP
+Panel URL:  http://$HOSTNAME
+phpMyAdmin: http://$HOSTNAME/phpmyadmin
+Webmail:    http://$HOSTNAME/webmail
 
 [Database]
 Root Pass: $MYSQL_ROOT_PASS
 DB User:   $DB_USER
 DB Pass:   $DB_PASS
 
-[Defaults]
-Panel Admin: admin / admin123
+[Panel Login]
+User: admin
+Pass: password
 EOF
 chmod 600 /root/server_credentials.txt
 
-# Restart all services
+# Restart Services
 systemctl daemon-reload
-systemctl restart mysql bind9 postfix dovecot nginx $PHP_SERVICE fail2ban ssh
+systemctl restart mysql bind9 postfix dovecot nginx ssh
 
 log "Setup Complete!"
 echo "-----------------------------------------------------"
-echo " Credentials saved to: /root/server_credentials.txt"
-echo " Access Webmail:       http://$SERVER_IP/webmail"
-echo " Access phpMyAdmin:    http://$SERVER_IP/phpmyadmin"
-echo " SSH Command:          ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP"
+echo " Credentials: /root/server_credentials.txt"
+echo " Panel URL:   http://$HOSTNAME"
+echo " SSH Command: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP"
 echo "-----------------------------------------------------"
