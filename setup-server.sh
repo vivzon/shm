@@ -286,6 +286,39 @@ if ! id "$ADMIN_USER" &>/dev/null; then
     usermod -aG sudo $ADMIN_USER
 fi
 
+# --------------------------------------------------------------------------
+# FIX SUDOERS FOR ADMIN USER
+# --------------------------------------------------------------------------
+log "Configuring Sudoers for $ADMIN_USER..."
+
+# Ensure sudoers.d exists and has correct permissions
+if [ ! -d /etc/sudoers.d ]; then
+    mkdir -p /etc/sudoers.d
+    chmod 755 /etc/sudoers.d
+    chown root:root /etc/sudoers.d
+fi
+
+# Create sudoers file
+cat > /etc/sudoers.d/shm-panel << EOF
+$ADMIN_USER ALL=(ALL) NOPASSWD: ALL
+EOF
+
+# Set secure permissions
+chmod 440 /etc/sudoers.d/shm-panel
+chown root:root /etc/sudoers.d/shm-panel
+
+# Validate sudoers syntax
+if visudo -c >/dev/null 2>&1; then
+    log "Sudoers file syntax OK"
+else
+    error "Invalid sudoers configuration! Removing corrupted file."
+    rm -f /etc/sudoers.d/shm-panel
+    exit 1
+fi
+
+log "Sudoers successfully configured for $ADMIN_USER."
+
+
 # SSH Config
 sed -i "s/#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
 echo "AllowUsers $ADMIN_USER root" >> /etc/ssh/sshd_config
