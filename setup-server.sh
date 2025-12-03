@@ -3,7 +3,6 @@
 # ==============================================================================
 # SHM Panel - Ultimate VPS Setup Script (Updated)
 # ==============================================================================
-
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -21,9 +20,17 @@ if [ "$EUID" -ne 0 ]; then error "Please run as root"; exit 1; fi
 # ------------------------------------------------------------------------------
 # 1. Configuration & Credentials
 # ------------------------------------------------------------------------------
+# Prompt for the main domain
+read -p "Enter the main domain for your panel (e.g., server.sellvell.com): " MAIN_DOMAIN
+
+# If the domain is not provided, use a default
+if [ -z "$MAIN_DOMAIN" ]; then
+    MAIN_DOMAIN="server.sellvell.com"
+    warning "No domain entered. Using default domain: $MAIN_DOMAIN"
+fi
 
 SERVER_IP=$(hostname -I | awk '{print $1}')
-HOSTNAME=$(hostname -f) # Uses FQDN (e.g., server.sellvell.com)
+HOSTNAME=$MAIN_DOMAIN  # Using the provided domain as the hostname
 TIMEZONE="Asia/Kolkata"
 SSH_PORT="2222"
 
@@ -34,7 +41,7 @@ ADMIN_PASS=$(openssl rand -base64 16)
 
 # Database Credentials
 DB_MAIN_NAME="shm_panel"
-DB_RC_NAME="roundcubemail" 
+DB_RC_NAME="roundcubemail"
 DB_USER="shm_db_user"
 DB_PASS=$(openssl rand -base64 24)
 
@@ -151,71 +158,6 @@ mysql -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PA
 mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$DB_USER'@'localhost' WITH GRANT OPTION;"
 mysql -e "FLUSH PRIVILEGES;"
 
-# Import Panel Schema (UPDATED with parent_id for Subdomains)
-cat > /root/schema.sql << 'EOSQL'
-SET FOREIGN_KEY_CHECKS=0;
-CREATE TABLE IF NOT EXISTS `users` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `username` varchar(50) NOT NULL,
-  `email` varchar(100) NOT NULL,
-  `password` varchar(255) NOT NULL,
-  `role` enum('superadmin','admin','user') NOT NULL DEFAULT 'user',
-  `plan_id` int(11) DEFAULT NULL,
-  `ssh_access_enabled` tinyint(1) NOT NULL DEFAULT '0',
-  `status` enum('active','inactive','suspended') NOT NULL DEFAULT 'active',
-  `last_login` datetime DEFAULT NULL,
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`), UNIQUE KEY `username` (`username`), UNIQUE KEY `email` (`email`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS `user_permissions` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `user_id` int(11) NOT NULL,
-  `permission` varchar(50) NOT NULL,
-  `allowed` tinyint(1) DEFAULT '1',
-  PRIMARY KEY (`id`),
-  KEY `user_id` (`user_id`),
-  CONSTRAINT `user_permissions_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS `domains` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `user_id` int(11) NOT NULL,
-  `parent_id` int(11) DEFAULT NULL,
-  `domain_name` varchar(255) NOT NULL,
-  `document_root` varchar(500) NOT NULL,
-  `php_version` varchar(10) DEFAULT '8.2',
-  `ssl_enabled` tinyint(1) DEFAULT '0',
-  `expiry_date` date DEFAULT NULL,
-  `status` enum('active','suspended') NOT NULL DEFAULT 'active',
-  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`), UNIQUE KEY `domain_name` (`domain_name`), KEY `user_id` (`user_id`),
-  CONSTRAINT `domains_ibfk_1` FOREIGN KEY (`user_id`) REFERENCES `users` (`id`) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS `hosting_plans` (
-  `id` int(11) NOT NULL AUTO_INCREMENT,
-  `name` varchar(255) NOT NULL,
-  `disk_space_mb` int(10) UNSIGNED NOT NULL DEFAULT '1000',
-  `bandwidth_gb` int(10) UNSIGNED NOT NULL DEFAULT '10',
-  `max_domains` int(10) UNSIGNED NOT NULL DEFAULT '1',
-  `price_monthly` decimal(10,2) NOT NULL DEFAULT '0.00',
-  `is_visible` tinyint(1) NOT NULL DEFAULT '1',
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- Insert Admin (Password: password) for initial login
-INSERT IGNORE INTO `users` (`username`, `email`, `password`, `role`, `status`) VALUES 
-('admin', 'admin@localhost', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'superadmin', 'active');
-INSERT IGNORE INTO `hosting_plans` (`name`, `disk_space_mb`) VALUES ('Basic', 1000);
-SET FOREIGN_KEY_CHECKS=1;
-EOSQL
-
-mysql $DB_MAIN_NAME < /root/schema.sql
-rm /root/schema.sql
-
 # ------------------------------------------------------------------------------
 # 7. Install phpMyAdmin & Roundcube
 # ------------------------------------------------------------------------------
@@ -269,26 +211,15 @@ EOF
 chown -R www-data:www-data /var/www/html
 
 # ------------------------------------------------------------------------------
-# 8. SUDO Privileges (CRITICAL FOR CONTROL PANEL)
+# 9. Nginx Configuration (Main Domain)
 # ------------------------------------------------------------------------------
-log "Configuring Sudo Permissions for Panel..."
-
-# This allows PHP to create users, reload Nginx, etc.
-cat > /etc/sudoers.d/shm-panel << EOF
-www-data ALL=(ALL) NOPASSWD: /usr/sbin/nginx, /bin/systemctl reload nginx, /usr/bin/mv, /usr/bin/cp, /usr/bin/rm, /usr/bin/chown, /usr/bin/ln, /usr/bin/mkdir, /usr/bin/chmod
-EOF
-chmod 0440 /etc/sudoers.d/shm-panel
-
-# ------------------------------------------------------------------------------
-# 9. Nginx Configuration
-# ------------------------------------------------------------------------------
-log "Configuring Nginx..."
+log "Configuring Nginx for $MAIN_DOMAIN..."
 
 # Main Panel Config (Specific Hostname)
-cat > /etc/nginx/sites-available/$HOSTNAME << EOF
+cat > /etc/nginx/sites-available/$MAIN_DOMAIN << EOF
 server {
     listen 80;
-    server_name $HOSTNAME;
+    server_name $MAIN_DOMAIN;
     root /var/www/shm-panel;
     index index.php index.html;
 
@@ -334,7 +265,7 @@ server {
 EOF
 
 # Enable Site & Disable Default
-ln -sf /etc/nginx/sites-available/$HOSTNAME /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/$MAIN_DOMAIN /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
 # Setup Main Panel Directory
@@ -357,8 +288,6 @@ fi
 
 # SSH Config
 sed -i "s/#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
-# Note: Keeping Root Login enabled via Key is recommended, but disabling password
-# sed -i "s/PermitRootLogin yes/PermitRootLogin no/" /etc/ssh/sshd_config
 echo "AllowUsers $ADMIN_USER root" >> /etc/ssh/sshd_config
 
 # Firewall
@@ -381,9 +310,9 @@ Server IP: $SERVER_IP
 SSH Port:  $SSH_PORT
 
 [Services]
-Panel URL:  http://$HOSTNAME
-phpMyAdmin: http://$HOSTNAME/phpmyadmin
-Webmail:    http://$HOSTNAME/webmail
+Panel URL:  http://$MAIN_DOMAIN
+phpMyAdmin: http://$MAIN_DOMAIN/phpmyadmin
+Webmail:    http://$MAIN_DOMAIN/webmail
 
 [Database]
 Root Pass: $MYSQL_ROOT_PASS
@@ -403,6 +332,6 @@ systemctl restart mysql bind9 postfix dovecot nginx ssh
 log "Setup Complete!"
 echo "-----------------------------------------------------"
 echo " Credentials: /root/server_credentials.txt"
-echo " Panel URL:   http://$HOSTNAME"
+echo " Panel URL:   http://$MAIN_DOMAIN"
 echo " SSH Command: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP"
 echo "-----------------------------------------------------"
