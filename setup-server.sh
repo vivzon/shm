@@ -271,7 +271,7 @@ rm -f /etc/nginx/sites-enabled/default
 # Setup Main Panel Directory
 mkdir -p /var/www/shm-panel
 # Place a placeholder index.php
-echo "<?php header('Location: /login'); ?>" > /var/www/shm-panel/index.php
+# echo "<?php header('Location: /login'); ?>" > /var/www/shm-panel/index.php
 chown -R www-data:www-data /var/www/shm-panel
 
 # ------------------------------------------------------------------------------
