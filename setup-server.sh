@@ -71,32 +71,36 @@ apt install -y \
     postfix dovecot-core dovecot-imapd dovecot-pop3d \
     software-properties-common
 
-timedatectl set-timezone $TIMEZONE
+# Install multiple PHP versions
+log "Adding PHP repository..."
+add-apt-repository ppa:ondrej/php -y
+apt update
 
-# ------------------------------------------------------------------------------
-# 3. PHP Setup
-# ------------------------------------------------------------------------------
+log "Installing multiple PHP versions..."
+apt install -y \
+    php8.1-fpm php8.1-mysql php8.1-curl php8.1-gd php8.1-mbstring php8.1-xml php8.1-zip php8.1-bcmath \
+    php8.2-fpm php8.2-mysql php8.2-curl php8.2-gd php8.2-mbstring php8.2-xml php8.2-zip php8.2-bcmath \
+    php8.3-fpm php8.3-mysql php8.3-curl php8.3-gd php8.3-mbstring php8.3-xml php8.3-zip php8.3-bcmath
 
-log "Installing PHP..."
-apt install -y php-fpm php-mysql php-curl php-gd php-mbstring \
-    php-xml php-zip php-bcmath php-json php-intl php-soap php-ldap php-imagick
-
-# Detect Version
-PHP_VERSION=$(php -v | head -n 1 | cut -d " " -f 2 | cut -d "." -f 1,2)
+# Detect default PHP version
+PHP_VERSION="8.2"
 PHP_SOCK="/var/run/php/php$PHP_VERSION-fpm.sock"
-log "PHP $PHP_VERSION detected."
+log "Using PHP $PHP_VERSION as default."
 
-# PHP Config
-cat > /etc/php/$PHP_VERSION/fpm/conf.d/99-custom.ini << EOF
+# Configure all PHP versions
+for version in 8.1 8.2 8.3; do
+    cat > /etc/php/$version/fpm/conf.d/99-custom.ini << EOF
 upload_max_filesize = 1024M
 post_max_size = 1024M
 memory_limit = 512M
 max_execution_time = 300
 date.timezone = "$TIMEZONE"
 EOF
+    systemctl restart php$version-fpm
+done
 
 # ------------------------------------------------------------------------------
-# 4. DNS Server (Bind9)
+# 3. DNS Server (Bind9)
 # ------------------------------------------------------------------------------
 
 log "Configuring Bind9 (DNS)..."
@@ -115,7 +119,7 @@ systemctl restart bind9
 systemctl enable bind9
 
 # ------------------------------------------------------------------------------
-# 5. Mail Server
+# 4. Mail Server
 # ------------------------------------------------------------------------------
 
 log "Configuring Postfix & Dovecot..."
@@ -131,7 +135,7 @@ sed -i 's/mail_location = mbox:~/mail_location = maildir:~\/Maildir/' /etc/dovec
 systemctl restart dovecot
 
 # ------------------------------------------------------------------------------
-# 6. Database Setup (Updated Schema)
+# 5. Database Setup (Updated Schema)
 # ------------------------------------------------------------------------------
 
 log "Configuring MySQL..."
@@ -158,8 +162,23 @@ mysql -e "CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PA
 mysql -e "GRANT ALL PRIVILEGES ON *.* TO '$DB_USER'@'localhost' WITH GRANT OPTION;"
 mysql -e "FLUSH PRIVILEGES;"
 
+# Create domains table for SHM Panel
+mysql $DB_MAIN_NAME << EOF
+CREATE TABLE IF NOT EXISTS domains (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    parent_id INT DEFAULT NULL,
+    domain_name VARCHAR(255) NOT NULL UNIQUE,
+    document_root VARCHAR(500) NOT NULL,
+    php_version VARCHAR(10) DEFAULT '8.2',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (parent_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+EOF
+
 # ------------------------------------------------------------------------------
-# 7. Install phpMyAdmin & Roundcube
+# 6. Install phpMyAdmin & Roundcube
 # ------------------------------------------------------------------------------
 log "Installing Web Apps..."
 
@@ -208,10 +227,138 @@ cat > config/config.inc.php << EOF
 ?>
 EOF
 
-chown -R www-data:www-data /var/www/html
+# ------------------------------------------------------------------------------
+# 7. Configure Sudo Permissions for Domain Management
+# ------------------------------------------------------------------------------
+log "Configuring sudo permissions for domain management..."
+
+# Create sudoers file for www-data (for domain management)
+cat > /etc/sudoers.d/shm-panel-www-data << EOF
+# Allow www-data to run specific commands without password for SHM Panel
+www-data ALL=(ALL) NOPASSWD: /usr/bin/mkdir, /usr/bin/rm, /usr/bin/mv, /usr/bin/chown, /usr/bin/chmod, /usr/bin/ln, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t
+EOF
+
+chmod 440 /etc/sudoers.d/shm-panel-www-data
+
+# Create sudoers file for admin user
+cat > /etc/sudoers.d/shm-panel-admin << EOF
+# Allow admin user to run all commands
+$ADMIN_USER ALL=(ALL) NOPASSWD: ALL
+EOF
+
+chmod 440 /etc/sudoers.d/shm-panel-admin
+
+# Validate sudoers syntax
+if visudo -c >/dev/null 2>&1; then
+    log "Sudoers files are valid"
+else
+    error "Invalid sudoers configuration!"
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
-# 9. Nginx Configuration (Main Domain)
+# 8. Set Proper Permissions for /var/www
+# ------------------------------------------------------------------------------
+log "Setting up /var/www directory permissions..."
+
+# Create /var/www directory if it doesn't exist
+mkdir -p /var/www
+
+# Set ownership to www-data but allow admin to write
+chown -R www-data:www-data /var/www
+chmod 755 /var/www
+
+# Set ACL to allow admin user to access /var/www
+setfacl -R -m u:$ADMIN_USER:rwx /var/www
+setfacl -R -d -m u:$ADMIN_USER:rwx /var/www
+
+# Set correct permissions for Nginx
+chown -R www-data:www-data /var/www/html
+chmod -R 755 /var/www/html
+
+# ------------------------------------------------------------------------------
+# 9. Create Domain Management Directories
+# ------------------------------------------------------------------------------
+log "Creating domain management structure..."
+
+# Create a template directory for new domains
+mkdir -p /var/www/templates
+cat > /var/www/templates/index.html << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome to Your New Domain</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            padding: 50px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 40px;
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            max-width: 600px;
+        }
+        h1 {
+            font-size: 3em;
+            margin-bottom: 20px;
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        p {
+            font-size: 1.2em;
+            line-height: 1.6;
+            margin-bottom: 30px;
+            color: rgba(255,255,255,0.9);
+        }
+        .success {
+            color: #4ade80;
+            font-weight: bold;
+            font-size: 1.3em;
+        }
+        .info {
+            background: rgba(255,255,255,0.2);
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 20px;
+            text-align: left;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to %%DOMAIN_NAME%%</h1>
+        <p>Your website is successfully configured and ready to use!</p>
+        <p class="success">✓ Powered by SHM Panel</p>
+        <div class="info">
+            <p><strong>Document Root:</strong> %%DOCUMENT_ROOT%%</p>
+            <p><strong>PHP Version:</strong> %%PHP_VERSION%%</p>
+            <p><strong>Server:</strong> Nginx + PHP-FPM</p>
+            <p><strong>Status:</strong> Online and ready</p>
+        </div>
+        <p><small>Powered by SHM Panel - Simple Hosting Management</small></p>
+    </div>
+</body>
+</html>
+EOF
+
+chown -R www-data:www-data /var/www/templates
+chmod -R 755 /var/www/templates
+
+# ------------------------------------------------------------------------------
+# 10. Nginx Configuration (Main Domain)
 # ------------------------------------------------------------------------------
 log "Configuring Nginx for $MAIN_DOMAIN..."
 
@@ -254,28 +401,178 @@ server {
         }
     }
 
+    # --- PHP Processing ---
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
         fastcgi_pass unix:$PHP_SOCK;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        include fastcgi_params;
     }
 
-    location ~ /\. { deny all; }
+    # --- Security ---
+    location ~ /\. {
+        deny all;
+    }
+    
+    location ~* \.(log|sql|git|env)$ {
+        deny all;
+    }
 }
 EOF
+
+# Create Nginx configuration directory structure
+mkdir -p /etc/nginx/sites-available
+mkdir -p /etc/nginx/sites-enabled
 
 # Enable Site & Disable Default
 ln -sf /etc/nginx/sites-available/$MAIN_DOMAIN /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 
-# Setup Main Panel Directory
-mkdir -p /var/www/shm-panel
-# Place a placeholder index.php
-# echo "<?php header('Location: /login'); ?>" > /var/www/shm-panel/index.php
-chown -R www-data:www-data /var/www/shm-panel
+# Create Nginx snippets directory if it doesn't exist
+mkdir -p /etc/nginx/snippets
+
+# Create fastcgi-php.conf if it doesn't exist
+if [ ! -f /etc/nginx/snippets/fastcgi-php.conf ]; then
+    cat > /etc/nginx/snippets/fastcgi-php.conf << 'EOF'
+# regex to split $uri to $fastcgi_script_name and $fastcgi_path
+fastcgi_split_path_info ^(.+\.php)(/.+)$;
+
+# Check that the PHP script exists before passing it
+try_files $fastcgi_script_name =404;
+
+# Bypass the fact that try_files resets $fastcgi_path_info
+# see: http://trac.nginx.org/nginx/ticket/321
+set $path_info $fastcgi_path_info;
+fastcgi_param PATH_INFO $path_info;
+
+fastcgi_index index.php;
+include fastcgi.conf;
+EOF
+fi
 
 # ------------------------------------------------------------------------------
-# 10. Security & Finalize
+# 11. Create SHM Panel Directory Structure
+# ------------------------------------------------------------------------------
+log "Creating SHM Panel structure..."
+
+mkdir -p /var/www/shm-panel
+
+# Create basic panel structure
+mkdir -p /var/www/shm-panel/{includes,pages,assets}
+
+# Create a basic index.php
+cat > /var/www/shm-panel/index.php << 'EOF'
+<?php
+// SHM Panel - Main Index
+session_start();
+
+// Simple authentication check
+if (!isset($_SESSION['user_id'])) {
+    header('Location: pages/login.php');
+    exit;
+}
+
+// Redirect to dashboard
+header('Location: pages/dashboard.php');
+?>
+EOF
+
+# Create a simple login page
+mkdir -p /var/www/shm-panel/pages
+cat > /var/www/shm-panel/pages/login.php << 'EOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SHM Panel - Login</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin: 0;
+        }
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            width: 350px;
+        }
+        h2 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #666;
+        }
+        input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        button {
+            width: 100%;
+            padding: 12px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #764ba2;
+        }
+        .logo {
+            text-align: center;
+            margin-bottom: 20px;
+            font-size: 24px;
+            color: #667eea;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="logo">SHM Panel</div>
+        <h2>Login to Your Panel</h2>
+        <form method="POST" action="auth.php">
+            <div class="input-group">
+                <label>Username</label>
+                <input type="text" name="username" required>
+            </div>
+            <div class="input-group">
+                <label>Password</label>
+                <input type="password" name="password" required>
+            </div>
+            <button type="submit">Login</button>
+        </form>
+    </div>
+</body>
+</html>
+EOF
+
+# Set ownership and permissions
+chown -R www-data:www-data /var/www/shm-panel
+find /var/www/shm-panel -type d -exec chmod 755 {} \;
+find /var/www/shm-panel -type f -exec chmod 644 {} \;
+
+# ------------------------------------------------------------------------------
+# 12. Security & Finalize
 # ------------------------------------------------------------------------------
 log "Finalizing..."
 
@@ -284,40 +581,8 @@ if ! id "$ADMIN_USER" &>/dev/null; then
     useradd -m -s /bin/bash $ADMIN_USER
     echo "$ADMIN_USER:$ADMIN_PASS" | chpasswd
     usermod -aG sudo $ADMIN_USER
+    log "Created admin user: $ADMIN_USER"
 fi
-
-# --------------------------------------------------------------------------
-# FIX SUDOERS FOR ADMIN USER
-# --------------------------------------------------------------------------
-log "Configuring Sudoers for $ADMIN_USER..."
-
-# Ensure sudoers.d exists and has correct permissions
-if [ ! -d /etc/sudoers.d ]; then
-    mkdir -p /etc/sudoers.d
-    chmod 755 /etc/sudoers.d
-    chown root:root /etc/sudoers.d
-fi
-
-# Create sudoers file
-cat > /etc/sudoers.d/shm-panel << EOF
-$ADMIN_USER ALL=(ALL) NOPASSWD: ALL
-EOF
-
-# Set secure permissions
-chmod 440 /etc/sudoers.d/shm-panel
-chown root:root /etc/sudoers.d/shm-panel
-
-# Validate sudoers syntax
-if visudo -c >/dev/null 2>&1; then
-    log "Sudoers file syntax OK"
-else
-    error "Invalid sudoers configuration! Removing corrupted file."
-    rm -f /etc/sudoers.d/shm-panel
-    exit 1
-fi
-
-log "Sudoers successfully configured for $ADMIN_USER."
-
 
 # SSH Config
 sed -i "s/#Port 22/Port $SSH_PORT/" /etc/ssh/sshd_config
@@ -335,6 +600,13 @@ ufw allow 143
 ufw allow 587
 ufw --force enable
 
+# Test Nginx configuration
+nginx -t && log "Nginx configuration test passed" || error "Nginx configuration test failed"
+
+# ------------------------------------------------------------------------------
+# 13. Save Credentials and Complete
+# ------------------------------------------------------------------------------
+
 # Save Info
 cat > /root/server_credentials.txt << EOF
 === SHM Panel Credentials ===
@@ -343,28 +615,102 @@ Server IP: $SERVER_IP
 SSH Port:  $SSH_PORT
 
 [Services]
-Panel URL:  http://$MAIN_DOMAIN
-phpMyAdmin: http://$MAIN_DOMAIN/phpmyadmin
-Webmail:    http://$MAIN_DOMAIN/webmail
+Panel URL:      http://$MAIN_DOMAIN
+phpMyAdmin:     http://$MAIN_DOMAIN/phpmyadmin
+Webmail:        http://$MAIN_DOMAIN/webmail
+
+[System Login]
+Admin User:     $ADMIN_USER
+Admin Password: $ADMIN_PASS
 
 [Database]
-Root Pass: $MYSQL_ROOT_PASS
-DB User:   $DB_USER
-DB Pass:   $DB_PASS
+Root Password:  $MYSQL_ROOT_PASS
+DB User:        $DB_USER
+DB Password:    $DB_PASS
 
-[Panel Login]
-User: admin
-Pass: password
+[PHP Versions]
+Available:      8.1, 8.2, 8.3
+Default:        8.2
+
+[Important Notes]
+1. Domain Management: /var/www/ is configured for automatic domain creation
+2. Sudo Access: www-data can manage domains without password
+3. Default Panel Login: Use the login page at http://$MAIN_DOMAIN
+4. SSH: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP
+
+=== Domain Management ===
+- New domains will be created in /var/www/
+- Each domain gets its own directory and Nginx config
+- PHP version can be selected per domain (8.1, 8.2, or 8.3)
+- Subdomains are supported automatically
+
+=== Security ===
+- SSH is on port $SSH_PORT
+- UFW firewall is enabled
+- Fail2ban is installed
+- Regular updates configured
 EOF
+
 chmod 600 /root/server_credentials.txt
+
+# Also create a credentials file for the admin user
+mkdir -p /home/$ADMIN_USER
+cat > /home/$ADMIN_USER/credentials.txt << EOF
+=== SHM Panel Credentials ===
+Panel URL: http://$MAIN_DOMAIN
+SSH: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP
+Password: $ADMIN_PASS
+EOF
+chown $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/credentials.txt
+chmod 600 /home/$ADMIN_USER/credentials.txt
 
 # Restart Services
 systemctl daemon-reload
-systemctl restart mysql bind9 postfix dovecot nginx ssh
+systemctl restart mysql bind9 postfix dovecot nginx ssh php8.1-fpm php8.2-fpm php8.3-fpm
 
+# ------------------------------------------------------------------------------
+# 14. Installation Complete
+# ------------------------------------------------------------------------------
 log "Setup Complete!"
-echo "-----------------------------------------------------"
-echo " Credentials: /root/server_credentials.txt"
-echo " Panel URL:   http://$MAIN_DOMAIN"
-echo " SSH Command: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP"
-echo "-----------------------------------------------------"
+echo "========================================================================="
+echo "                    SHM PANEL INSTALLATION COMPLETE                      "
+echo "========================================================================="
+echo ""
+echo "✓ Server Information:"
+echo "  - Hostname:        $HOSTNAME"
+echo "  - IP Address:      $SERVER_IP"
+echo "  - SSH Port:        $SSH_PORT"
+echo ""
+echo "✓ Web Services:"
+echo "  - Panel:           http://$MAIN_DOMAIN"
+echo "  - phpMyAdmin:      http://$MAIN_DOMAIN/phpmyadmin"
+echo "  - Webmail:         http://$MAIN_DOMAIN/webmail"
+echo ""
+echo "✓ Login Credentials:"
+echo "  - Admin User:      $ADMIN_USER"
+echo "  - Admin Password:  $ADMIN_PASS"
+echo ""
+echo "✓ Database:"
+echo "  - Root Password:   $MYSQL_ROOT_PASS"
+echo "  - DB User:         $DB_USER"
+echo "  - DB Password:     [See /root/server_credentials.txt]"
+echo ""
+echo "✓ Features Installed:"
+echo "  - Multiple PHP versions (8.1, 8.2, 8.3)"
+echo "  - Domain management ready"
+echo "  - Nginx configured for dynamic domains"
+echo "  - Sudo permissions configured for www-data"
+echo "  - Security: UFW, Fail2ban, SSH on port $SSH_PORT"
+echo ""
+echo "========================================================================="
+echo "IMPORTANT: Please save these credentials!"
+echo "Full details in: /root/server_credentials.txt"
+echo "========================================================================="
+echo ""
+echo "Next steps:"
+echo "1. Upload your SHM Panel files to /var/www/shm-panel/"
+echo "2. Configure the database connection in your panel"
+echo "3. Visit http://$MAIN_DOMAIN to access your panel"
+echo "4. Use the domains.php page to add your first domain"
+echo ""
+echo "========================================================================="
