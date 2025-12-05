@@ -1,7 +1,15 @@
-# 🖥️ SHM — Server Hosting Management Panel
+# 🚀 What is SHM Panel?
 
-The **SHM Panel** is a lightweight web-based control panel for managing servers, hosting environments, and PHP-based applications.  
-This guide walks you through installing and configuring SHM on an Ubuntu-based server using **PHP 8.4**, **Nginx**, and **MySQL**.
+**SHM Panel** (Simple Hosting Management) is an all-in-one bash script that transforms a fresh Ubuntu VPS into a complete web hosting server in minutes. It automates the installation and configuration of Nginx, MySQL, DNS, Email, and control panel with domain management capabilities.
+
+---
+
+## 🌟 Key Highlights
+- 5-Minute Setup: From fresh server to fully functional hosting panel
+- Multi-PHP Support: Run PHP 8.1, 8.2, and 8.3 simultaneously
+- Domain Management: Add unlimited domains/subdomains via web interface
+- Security First: Automatic firewall, SSH hardening, and security configurations
+- Zero Manual Config: Everything configured automatically
 
 ---
 
