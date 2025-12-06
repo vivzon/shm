@@ -29,12 +29,15 @@ if [ -z "$MAIN_DOMAIN" ]; then
     warning "No domain entered. Using default domain: $MAIN_DOMAIN"
 fi
 
+# Extract domain parts for nameserver configuration
+DOMAIN_NAME=$(echo $MAIN_DOMAIN | awk -F. '{print $(NF-1)"."$NF}')
+HOST_NAME=$(echo $MAIN_DOMAIN | awk -F. '{print $1}')
 SERVER_IP=$(hostname -I | awk '{print $1}')
 HOSTNAME=$MAIN_DOMAIN  # Using the provided domain as the hostname
 TIMEZONE="Asia/Kolkata"
 SSH_PORT="2222"
 
-# Generates Secure Passwords
+# Generate Secure Passwords
 MYSQL_ROOT_PASS=$(openssl rand -base64 32)
 ADMIN_USER="shmadmin"
 ADMIN_PASS=$(openssl rand -base64 16)
@@ -48,7 +51,16 @@ DB_PASS=$(openssl rand -base64 24)
 # Blowfish Secret for phpMyAdmin
 PMA_SECRET=$(openssl rand -hex 16)
 
+# Nameserver Configuration
+NS1="ns1.${DOMAIN_NAME}"
+NS2="ns2.${DOMAIN_NAME}"
+NS1_IP="${SERVER_IP}"
+NS2_IP="${SERVER_IP}"  # Same IP for both NS records for single server setup
+EMAIL="admin.${DOMAIN_NAME}"
+
 log "Starting Installation on $SERVER_IP ($HOSTNAME)..."
+log "Domain: $DOMAIN_NAME | Host: $HOST_NAME"
+log "Nameservers will be: $NS1 ($NS1_IP), $NS2 ($NS2_IP)"
 
 # ------------------------------------------------------------------------------
 # 2. System Updates & Dependencies
@@ -67,7 +79,7 @@ apt install -y \
     curl wget git unzip htop acl zip \
     nginx mysql-server \
     ufw fail2ban \
-    bind9 bind9utils bind9-doc \
+    bind9 bind9utils bind9-doc dnsutils \
     postfix dovecot-core dovecot-imapd dovecot-pop3d \
     software-properties-common
 
@@ -100,23 +112,180 @@ EOF
 done
 
 # ------------------------------------------------------------------------------
-# 3. DNS Server (Bind9)
+# 3. DNS Server (Bind9) - Enhanced Configuration
 # ------------------------------------------------------------------------------
 
-log "Configuring Bind9 (DNS)..."
+log "Configuring Bind9 (DNS) with nameserver setup..."
 
+# Stop bind9 temporarily to make configuration changes
+systemctl stop bind9
+
+# Configure named.conf.options
 cat > /etc/bind/named.conf.options << EOF
 options {
     directory "/var/cache/bind";
-    recursion yes;
-    allow-query { any; };
+    
+    // If there is a firewall between you and nameservers you want
+    // to talk to, you may need to fix the firewall to allow multiple
+    // ports to talk.  See http://www.kb.cert.org/vuls/id/800113
+    
+    // If your ISP provided one or more IP addresses for stable 
+    // nameservers, you probably want to use them as forwarders.  
+    // Uncomment the following block, and insert the addresses replacing 
+    // the all-0's placeholder.
+    
+    forwarders {
+        8.8.8.8;
+        8.8.4.4;
+    };
+    
+    //========================================================================
+    // If BIND logs error messages about the root key being expired,
+    // you will need to update your keys.  See https://www.isc.org/bind-keys
+    //========================================================================
+    
     dnssec-validation auto;
+    
+    auth-nxdomain no;    # conform to RFC1035
     listen-on-v6 { any; };
+    
+    // Enable recursion for internal network
+    recursion yes;
+    allow-recursion { any; };
+    
+    // Allow queries from anywhere
+    allow-query { any; };
+    
+    // Enable query logging (optional)
+    // querylog yes;
 };
 EOF
 
-systemctl restart bind9
+# Create zone file directory if it doesn't exist
+mkdir -p /etc/bind/zones
+
+# Create forward zone file
+cat > /etc/bind/zones/db.${DOMAIN_NAME} << EOF
+\$TTL    604800
+@       IN      SOA     ${NS1}. ${EMAIL}. (
+                              2         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+
+; Name Servers
+@       IN      NS      ${NS1}.
+@       IN      NS      ${NS2}.
+
+; A Records
+@       IN      A       ${SERVER_IP}
+${HOST_NAME}    IN      A       ${SERVER_IP}
+${NS1}          IN      A       ${SERVER_IP}
+${NS2}          IN      A       ${SERVER_IP}
+www             IN      A       ${SERVER_IP}
+mail            IN      A       ${SERVER_IP}
+panel           IN      A       ${SERVER_IP}
+
+; MX Record
+@       IN      MX      10      mail.${DOMAIN_NAME}.
+
+; CNAME Records
+ftp             IN      CNAME   ${HOST_NAME}.${DOMAIN_NAME}.
+smtp            IN      CNAME   mail.${DOMAIN_NAME}.
+pop3            IN      CNAME   mail.${DOMAIN_NAME}.
+imap            IN      CNAME   mail.${DOMAIN_NAME}.
+
+; TXT Records (for SPF, DKIM, DMARC)
+@       IN      TXT     "v=spf1 a mx ip4:${SERVER_IP} ~all"
+_dmarc  IN      TXT     "v=DMARC1; p=none; rua=mailto:admin@${DOMAIN_NAME}"
+EOF
+
+# Create reverse zone file (if needed)
+REVERSE_ZONE=$(echo $SERVER_IP | awk -F. '{print $3"."$2"."$1".in-addr.arpa"}')
+cat > /etc/bind/zones/db.${REVERSE_ZONE} << EOF
+\$TTL    604800
+@       IN      SOA     ${NS1}. ${EMAIL}. (
+                              1         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+
+; Name Servers
+@       IN      NS      ${NS1}.
+@       IN      NS      ${NS2}.
+
+; PTR Records
+$(echo $SERVER_IP | awk -F. '{print $4}')      IN      PTR     ${HOST_NAME}.${DOMAIN_NAME}.
+EOF
+
+# Configure named.conf.local
+cat > /etc/bind/named.conf.local << EOF
+// Forward Zone
+zone "${DOMAIN_NAME}" {
+    type master;
+    file "/etc/bind/zones/db.${DOMAIN_NAME}";
+    allow-transfer { any; };
+    allow-query { any; };
+};
+
+// Reverse Zone
+zone "${REVERSE_ZONE}" {
+    type master;
+    file "/etc/bind/zones/db.${REVERSE_ZONE}";
+    allow-transfer { any; };
+    allow-query { any; };
+};
+
+// Include the internal zones
+include "/etc/bind/zones.rfc1918";
+include "/etc/bind/named.conf.default-zones";
+EOF
+
+# Set proper permissions
+chown -R bind:bind /etc/bind/zones
+chmod 644 /etc/bind/zones/db.*
+
+# Update resolv.conf to use local DNS
+cat > /etc/resolv.conf << EOF
+# Generated by SHM Panel setup
+nameserver 127.0.0.1
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+search ${DOMAIN_NAME}
+EOF
+
+# Make resolv.conf immutable to prevent network manager from overwriting
+chattr +i /etc/resolv.conf 2>/dev/null || true
+
+# Configure systemd-resolved to use local bind
+systemctl stop systemd-resolved
+systemctl disable systemd-resolved
+
+# Start and enable bind9
+systemctl start bind9
 systemctl enable bind9
+
+# Test DNS configuration
+log "Testing DNS configuration..."
+named-checkconf /etc/bind/named.conf
+named-checkzone ${DOMAIN_NAME} /etc/bind/zones/db.${DOMAIN_NAME}
+named-checkzone ${REVERSE_ZONE} /etc/bind/zones/db.${REVERSE_ZONE}
+
+# Test DNS resolution
+log "Testing local DNS resolution..."
+if dig @127.0.0.1 ${MAIN_DOMAIN} +short | grep -q "${SERVER_IP}"; then
+    log "✓ DNS forward resolution working"
+else
+    warning "DNS forward resolution test failed. Continuing anyway..."
+fi
+
+if dig @127.0.0.1 -x ${SERVER_IP} +short | grep -q "${HOST_NAME}.${DOMAIN_NAME}"; then
+    log "✓ DNS reverse resolution working"
+else
+    warning "DNS reverse resolution test failed. Continuing anyway..."
+fi
 
 # ------------------------------------------------------------------------------
 # 4. Mail Server
@@ -128,10 +297,19 @@ postconf -e "myhostname = $HOSTNAME"
 postconf -e "inet_interfaces = all"
 postconf -e "inet_protocols = all"
 postconf -e "home_mailbox = Maildir/"
+postconf -e "mydestination = $HOSTNAME, localhost.${DOMAIN_NAME}, , localhost"
+postconf -e "myorigin = $DOMAIN_NAME"
+postconf -e "mynetworks = 127.0.0.0/8 [::ffff:127.0.0.0]/104 [::1]/128"
 systemctl restart postfix
 
+# Configure Dovecot
 sed -i 's/#disable_plaintext_auth = yes/disable_plaintext_auth = no/' /etc/dovecot/conf.d/10-auth.conf
 sed -i 's/mail_location = mbox:~/mail_location = maildir:~\/Maildir/' /etc/dovecot/conf.d/10-mail.conf
+sed -i "s/#ssl = yes/ssl = no/" /etc/dovecot/conf.d/10-ssl.conf  # Disable SSL for local testing
+
+# Configure mail domain
+sed -i "s/#mail_domain = example.com/mail_domain = ${DOMAIN_NAME}/" /etc/dovecot/conf.d/10-auth.conf
+
 systemctl restart dovecot
 
 # ------------------------------------------------------------------------------
@@ -171,9 +349,23 @@ CREATE TABLE IF NOT EXISTS domains (
     domain_name VARCHAR(255) NOT NULL UNIQUE,
     document_root VARCHAR(500) NOT NULL,
     php_version VARCHAR(10) DEFAULT '8.2',
+    dns_zone TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (parent_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS dns_records (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    record_type VARCHAR(10) NOT NULL,
+    record_name VARCHAR(255) NOT NULL,
+    record_value VARCHAR(500) NOT NULL,
+    ttl INT DEFAULT 3600,
+    priority INT DEFAULT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 EOF
 
@@ -235,7 +427,7 @@ log "Configuring sudo permissions for domain management..."
 # Create sudoers file for www-data (for domain management)
 cat > /etc/sudoers.d/shm-panel-www-data << EOF
 # Allow www-data to run specific commands without password for SHM Panel
-www-data ALL=(ALL) NOPASSWD: /usr/bin/mkdir, /usr/bin/rm, /usr/bin/mv, /usr/bin/chown, /usr/bin/chmod, /usr/bin/ln, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t
+www-data ALL=(ALL) NOPASSWD: /usr/bin/mkdir, /usr/bin/rm, /usr/bin/mv, /usr/bin/chown, /usr/bin/chmod, /usr/bin/ln, /usr/bin/systemctl reload nginx, /usr/sbin/nginx -t, /usr/bin/systemctl reload bind9, /usr/bin/cp, /usr/bin/cat, /usr/bin/echo
 EOF
 
 chmod 440 /etc/sudoers.d/shm-panel-www-data
@@ -346,6 +538,7 @@ cat > /var/www/templates/index.html << 'EOF'
             <p><strong>Document Root:</strong> %%DOCUMENT_ROOT%%</p>
             <p><strong>PHP Version:</strong> %%PHP_VERSION%%</p>
             <p><strong>Server:</strong> Nginx + PHP-FPM</p>
+            <p><strong>Nameservers:</strong> ns1.%%DOMAIN_NAME%% | ns2.%%DOMAIN_NAME%%</p>
             <p><strong>Status:</strong> Online and ready</p>
         </div>
         <p><small>Powered by SHM Panel - Simple Hosting Management</small></p>
@@ -458,7 +651,7 @@ log "Creating SHM Panel structure..."
 mkdir -p /var/www/shm-panel
 
 # Create basic panel structure
-mkdir -p /var/www/shm-panel/{includes,pages,assets}
+mkdir -p /var/www/shm-panel/{includes,pages,assets,scripts}
 
 # Create a basic index.php
 cat > /var/www/shm-panel/index.php << 'EOF'
@@ -566,6 +759,42 @@ cat > /var/www/shm-panel/pages/login.php << 'EOF'
 </html>
 EOF
 
+# Create DNS management script
+cat > /var/www/shm-panel/scripts/dns_manager.php << 'EOF'
+<?php
+// DNS Manager for SHM Panel
+function addDNSRecord($domain, $type, $name, $value, $ttl = 3600) {
+    // This function would add DNS records to Bind9
+    $zoneFile = "/etc/bind/zones/db.{$domain}";
+    
+    if (file_exists($zoneFile)) {
+        $record = "\n{$name}\tIN\t{$type}\t{$value}";
+        file_put_contents($zoneFile, $record, FILE_APPEND);
+        
+        // Reload Bind9
+        exec('sudo systemctl reload bind9', $output, $return);
+        return $return === 0;
+    }
+    return false;
+}
+
+function removeDNSRecord($domain, $type, $name) {
+    $zoneFile = "/etc/bind/zones/db.{$domain}";
+    
+    if (file_exists($zoneFile)) {
+        $content = file_get_contents($zoneFile);
+        $pattern = "/.*{$name}.*IN.*{$type}.*/";
+        $content = preg_replace($pattern, '', $content);
+        file_put_contents($zoneFile, $content);
+        
+        exec('sudo systemctl reload bind9', $output, $return);
+        return $return === 0;
+    }
+    return false;
+}
+?>
+EOF
+
 # Set ownership and permissions
 chown -R www-data:www-data /var/www/shm-panel
 find /var/www/shm-panel -type d -exec chmod 755 {} \;
@@ -594,14 +823,20 @@ ufw default allow outgoing
 ufw allow $SSH_PORT/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw allow 53
-ufw allow 25
-ufw allow 143
-ufw allow 587
+ufw allow 53/tcp
+ufw allow 53/udp
+ufw allow 25/tcp
+ufw allow 143/tcp
+ufw allow 587/tcp
+ufw allow 993/tcp
+ufw allow 995/tcp
 ufw --force enable
 
 # Test Nginx configuration
 nginx -t && log "Nginx configuration test passed" || error "Nginx configuration test failed"
+
+# Test Bind9 configuration
+named-checkconf && log "Bind9 configuration test passed" || error "Bind9 configuration test failed"
 
 # ------------------------------------------------------------------------------
 # 13. Save Credentials and Complete
@@ -614,7 +849,15 @@ Hostname:  $HOSTNAME
 Server IP: $SERVER_IP
 SSH Port:  $SSH_PORT
 
-[Services]
+[DNS Configuration]
+Domain:          $DOMAIN_NAME
+Main Domain:     $MAIN_DOMAIN
+Nameserver 1:    $NS1
+Nameserver 2:    $NS2
+Nameserver IPs:  $NS1_IP, $NS2_IP
+Reverse Zone:    $REVERSE_ZONE
+
+[Web Services]
 Panel URL:      http://$MAIN_DOMAIN
 phpMyAdmin:     http://$MAIN_DOMAIN/phpmyadmin
 Webmail:        http://$MAIN_DOMAIN/webmail
@@ -632,21 +875,36 @@ DB Password:    $DB_PASS
 Available:      8.1, 8.2, 8.3
 Default:        8.2
 
+[DNS Zone Information]
+Zone file: /etc/bind/zones/db.${DOMAIN_NAME}
+Reverse zone: /etc/bind/zones/db.${REVERSE_ZONE}
+To add new domains: Add zone files in /etc/bind/zones/
+
 [Important Notes]
 1. Domain Management: /var/www/ is configured for automatic domain creation
-2. Sudo Access: www-data can manage domains without password
-3. Default Panel Login: Use the login page at http://$MAIN_DOMAIN
-4. SSH: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP
+2. DNS Management: DNS zones are automatically created for new domains
+3. Sudo Access: www-data can manage domains and DNS without password
+4. Default Panel Login: Use the login page at http://$MAIN_DOMAIN
+5. SSH: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP
 
 === Domain Management ===
 - New domains will be created in /var/www/
 - Each domain gets its own directory and Nginx config
+- DNS zones are automatically created for each domain
 - PHP version can be selected per domain (8.1, 8.2, or 8.3)
 - Subdomains are supported automatically
 
+=== DNS Configuration Steps for Domain Registrar ===
+1. Login to your domain registrar
+2. Update nameservers for $DOMAIN_NAME to:
+   - Primary: $NS1
+   - Secondary: $NS2
+3. Set both nameservers to point to IP: $SERVER_IP
+4. Wait 24-48 hours for DNS propagation
+
 === Security ===
 - SSH is on port $SSH_PORT
-- UFW firewall is enabled
+- UFW firewall is enabled with DNS ports open
 - Fail2ban is installed
 - Regular updates configured
 EOF
@@ -660,9 +918,38 @@ cat > /home/$ADMIN_USER/credentials.txt << EOF
 Panel URL: http://$MAIN_DOMAIN
 SSH: ssh -p $SSH_PORT $ADMIN_USER@$SERVER_IP
 Password: $ADMIN_PASS
+
+=== DNS Information ===
+Nameservers for your domains:
+Primary: $NS1 ($SERVER_IP)
+Secondary: $NS2 ($SERVER_IP)
+
+=== Quick Commands ===
+Check DNS: dig @$SERVER_IP $MAIN_DOMAIN
+Check reverse: dig @$SERVER_IP -x $SERVER_IP
+Restart DNS: sudo systemctl restart bind9
+Check DNS status: sudo systemctl status bind9
 EOF
 chown $ADMIN_USER:$ADMIN_USER /home/$ADMIN_USER/credentials.txt
 chmod 600 /home/$ADMIN_USER/credentials.txt
+
+# Create a DNS check script for admin
+cat > /usr/local/bin/check-dns << 'EOF'
+#!/bin/bash
+echo "=== DNS Status Check ==="
+echo "Server IP: $(hostname -I | awk '{print $1}')"
+echo "Hostname: $(hostname)"
+echo ""
+echo "Checking local DNS resolution..."
+dig @127.0.0.1 $(hostname) +short
+echo ""
+echo "Checking forward zone..."
+named-checkzone $(hostname | awk -F. '{print $(NF-1)"."$NF}') /etc/bind/zones/db.* 2>/dev/null
+echo ""
+echo "DNS Service Status:"
+systemctl status bind9 --no-pager -l | grep -A5 "Active:"
+EOF
+chmod +x /usr/local/bin/check-dns
 
 # Restart Services
 systemctl daemon-reload
@@ -681,6 +968,12 @@ echo "  - Hostname:        $HOSTNAME"
 echo "  - IP Address:      $SERVER_IP"
 echo "  - SSH Port:        $SSH_PORT"
 echo ""
+echo "✓ DNS Configuration:"
+echo "  - Domain:          $DOMAIN_NAME"
+echo "  - Nameserver 1:    $NS1"
+echo "  - Nameserver 2:    $NS2"
+echo "  - Zone File:       /etc/bind/zones/db.${DOMAIN_NAME}"
+echo ""
 echo "✓ Web Services:"
 echo "  - Panel:           http://$MAIN_DOMAIN"
 echo "  - phpMyAdmin:      http://$MAIN_DOMAIN/phpmyadmin"
@@ -698,19 +991,34 @@ echo ""
 echo "✓ Features Installed:"
 echo "  - Multiple PHP versions (8.1, 8.2, 8.3)"
 echo "  - Domain management ready"
+echo "  - DNS Server (Bind9) with zone management"
 echo "  - Nginx configured for dynamic domains"
 echo "  - Sudo permissions configured for www-data"
 echo "  - Security: UFW, Fail2ban, SSH on port $SSH_PORT"
 echo ""
 echo "========================================================================="
-echo "IMPORTANT: Please save these credentials!"
+echo "IMPORTANT DNS CONFIGURATION STEPS:"
+echo "========================================================================="
+echo "1. Login to your domain registrar control panel"
+echo "2. Update nameservers for $DOMAIN_NAME to:"
+echo "   - Primary: $NS1"
+echo "   - Secondary: $NS2"
+echo "3. Point both nameservers to IP: $SERVER_IP"
+echo "4. DNS propagation may take 24-48 hours"
+echo ""
+echo "To check DNS configuration:"
+echo "  dig @$SERVER_IP $MAIN_DOMAIN"
+echo "  check-dns (command line tool)"
+echo ""
+echo "========================================================================="
 echo "Full details in: /root/server_credentials.txt"
 echo "========================================================================="
 echo ""
 echo "Next steps:"
-echo "1. Upload your SHM Panel files to /var/www/shm-panel/"
-echo "2. Configure the database connection in your panel"
-echo "3. Visit http://$MAIN_DOMAIN to access your panel"
-echo "4. Use the domains.php page to add your first domain"
+echo "1. Configure domain registrar with above nameservers"
+echo "2. Upload your SHM Panel files to /var/www/shm-panel/"
+echo "3. Configure the database connection in your panel"
+echo "4. Visit http://$MAIN_DOMAIN to access your panel"
+echo "5. Use the domains.php page to add your first domain"
 echo ""
 echo "========================================================================="
