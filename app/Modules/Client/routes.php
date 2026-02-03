@@ -32,3 +32,7 @@ Router::post('/backups', ['App\Modules\Client\Controllers\BackupsController', 'a
 // Security
 Router::get('/security', ['App\Modules\Client\Controllers\SecurityController', 'index']);
 Router::post('/security', ['App\Modules\Client\Controllers\SecurityController', 'action']);
+
+// DNS Management
+Router::get('/dns', ['App\Modules\Client\Controllers\DnsController', 'index']);
+Router::post('/dns', ['App\Modules\Client\Controllers\DnsController', 'action']);

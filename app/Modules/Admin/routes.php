@@ -24,3 +24,7 @@ Router::post('/admin/tools', ['App\Modules\Admin\Controllers\ToolsController', '
 // Logs
 Router::get('/admin/logs', ['App\Modules\Admin\Controllers\LogsController', 'index']);
 Router::post('/admin/logs', ['App\Modules\Admin\Controllers\LogsController', 'action']);
+
+// Resellers
+Router::get('/admin/resellers', ['App\Modules\Admin\Controllers\ResellersController', 'index']);
+Router::post('/admin/resellers', ['App\Modules\Admin\Controllers\ResellersController', 'action']);

@@ -41,9 +41,13 @@ class ToolsController extends Controller
             } elseif ($action == 'add_mail') {
                 $this->addMail();
             } elseif ($action == 'set_php_handler') {
-                $this->json(['status' => 'success', 'msg' => 'PHP Handler Updated (Stub)']);
+                $version = $this->input('php_version');
+                $out = cmd("set-php-handler " . escapeshellarg($version));
+                $this->json(['status' => 'success', 'msg' => 'PHP Handler Updated: ' . $out]);
             } elseif ($action == 'set_network_card') {
-                $this->json(['status' => 'success', 'msg' => 'Network Config Updated (Stub)']);
+                $card = $this->input('card');
+                $out = cmd("set-network-card " . escapeshellarg($card));
+                $this->json(['status' => 'success', 'msg' => 'Network Config Updated: ' . $out]);
             }
         } catch (\Exception $e) {
             $this->json(['status' => 'error', 'msg' => $e->getMessage()], 500);

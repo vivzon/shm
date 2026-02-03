@@ -7,10 +7,16 @@ use PDO;
 
 class Client
 {
-    public static function count($search = '')
+    public static function count($search = '', $ownerId = null)
     {
         $sql = "SELECT COUNT(*) FROM clients c LEFT JOIN domains d ON c.id = d.client_id WHERE 1=1";
         $params = [];
+
+        if ($ownerId !== null) {
+            $sql .= " AND c.owner_id = ?";
+            $params[] = $ownerId;
+        }
+
         if ($search) {
             $sql .= " AND (c.username LIKE ? OR d.domain LIKE ?)";
             $params[] = "%$search%";
@@ -19,7 +25,7 @@ class Client
         return Database::query($sql, $params)->fetchColumn();
     }
 
-    public static function getAll($limit = 10, $offset = 0, $search = '')
+    public static function getAll($limit = 10, $offset = 0, $search = '', $ownerId = null)
     {
         $sql = "SELECT c.*, d.id as domain_id, d.domain, p.name as pkg_name 
                 FROM clients c 
@@ -27,6 +33,11 @@ class Client
                 LEFT JOIN packages p ON c.package_id = p.id 
                 WHERE 1=1";
         $params = [];
+
+        if ($ownerId !== null) {
+            $sql .= " AND c.owner_id = ?";
+            $params[] = $ownerId;
+        }
 
         if ($search) {
             $sql .= " AND (c.username LIKE ? OR d.domain LIKE ?)";
@@ -45,14 +56,14 @@ class Client
         return $u || $d;
     }
 
-    public static function create($username, $email, $password, $packageId, $domain)
+    public static function create($username, $email, $password, $packageId, $domain, $ownerId = null)
     {
         $pdo = Database::pdo();
         $pdo->beginTransaction();
         try {
             // Client
             $hash = password_hash($password, PASSWORD_BCRYPT);
-            Database::query("INSERT INTO clients (username, email, password, package_id) VALUES (?,?,?,?)", [$username, $email, $hash, $packageId]);
+            Database::query("INSERT INTO clients (username, email, password, package_id, owner_id) VALUES (?,?,?,?,?)", [$username, $email, $hash, $packageId, $ownerId]);
             $cid = $pdo->lastInsertId();
 
             // Domain
@@ -99,6 +110,22 @@ class Client
             $pdo->rollBack();
             throw $e;
         }
+    }
+
+    public static function update($id, $email, $packageId, $password = null)
+    {
+        $sql = "UPDATE clients SET email = ?, package_id = ?";
+        $params = [$email, $packageId];
+
+        if ($password) {
+            $sql .= ", password = ?";
+            $params[] = password_hash($password, PASSWORD_BCRYPT);
+        }
+
+        $sql .= " WHERE id = ?";
+        $params[] = $id;
+
+        Database::query($sql, $params);
     }
 
     public static function updateStatus($id, $status)

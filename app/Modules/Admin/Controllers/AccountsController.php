@@ -18,8 +18,10 @@ class AccountsController extends Controller
         $limit = 10;
         $offset = ($page - 1) * $limit;
 
-        $clients = Client::getAll($limit, $offset, $search);
-        $total = Client::count($search);
+        $owner_id = ($_SESSION['role'] === 'reseller') ? $_SESSION['user_id'] : null;
+
+        $clients = Client::getAll($limit, $offset, $search, $owner_id);
+        $total = Client::count($search, $owner_id);
         $pages = ceil($total / $limit);
         $packages = Client::getPackages();
 
@@ -64,15 +66,27 @@ class AccountsController extends Controller
 
         if ($id) {
             // Update Logic
-            // ... (Omitted for brevity, would follow legacy UPDATE logic)
-            $this->json(['status' => 'success', 'msg' => 'Updated (Simulated)']);
+            $client = Client::find($id);
+            if (!$client) {
+                throw new \Exception("Client not found.");
+            }
+
+            Client::update($id, $e, $pkg, empty($pass) ? null : $pass);
+
+            // If package changed, we might need to update limits on system
+            if ($client['package_id'] != $pkg) {
+                cmd("update-account-limits " . escapeshellarg($client['username']) . " " . (int) $pkg);
+            }
+
+            $this->json(['status' => 'success', 'msg' => 'Account Updated']);
         } else {
             // Create Logic
             if (Client::exists($u, $d)) {
                 throw new \Exception("User or Domain already exists.");
             }
 
-            $cid = Client::create($u, $e, $pass, $pkg, $d);
+            $owner_id = ($_SESSION['role'] === 'reseller') ? $_SESSION['user_id'] : null;
+            $cid = Client::create($u, $e, $pass, $pkg, $d, $owner_id);
 
             // Shell Command
             cmd("create-account " . escapeshellarg($u) . " " . escapeshellarg($d) . " " . escapeshellarg($e) . " " . escapeshellarg($pass));

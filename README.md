@@ -41,29 +41,57 @@
 
 ---
 
-## 💿 Installation (One-Click)
+## 🏁 Step-by-Step Deployment Guide
 
-Reflash your VPS with **Ubuntu 20.04** or **22.04 LTS** and run the following command as `root`:
+Follow these steps to deploy SHM Panel on your fresh VPS.
+
+### 1. Prerequisites
+- **Operating System**: Ubuntu 20.04+, Debian 11+ (Fresh install recommended).
+- **Hardware**: Minimum 1GB RAM (2GB+ recommended), 1 CPU Core.
+- **Root Access**: You must have `sudo` or `root` privileges.
+
+### 2. DNS Preparation
+Before installing, point your domain and subdomains to your server IP:
+1.  **A Record**: `panel.yourdomain.com` -> `[Server IP]`
+2.  **A Record**: `*.yourdomain.com` -> `[Server IP]` (Recommended for auto-SSL)
+
+### 3. Installation
+Run the following commands as `root`:
 
 ```bash
-# Download and Install
+# Update and install git
+apt update && apt install git -y
+
+# Clone the repository
 cd /root
 git clone https://github.com/vivzon/shm-panel.git
 cd shm-panel
+
+# Run the installer
 chmod +x scripts/install.sh
-
-# Run Installer (Interactive)
 ./scripts/install.sh
-
-# OR Run Non-Interactive (Auto Mode)
-./scripts/install.sh --domain panel.example.com --email admin@example.com --yes
 ```
 
-The installer will automatically:
-1.  Install Nginx, PHP, MariaDB, Redis, Mail Stack.
-2.  Deploy the MVC core and Backend Engine.
-3.  Configure Firewalls, Swap, and Kernel Security.
-4.  Generate Admin Credentials.
+> [!TIP]
+> **Non-Interactive Mode**: You can skip prompts by passing arguments:
+> `./scripts/install.sh --domain panel.example.com --email admin@example.com --yes`
+
+### 4. Post-Installation
+Once the installer finishes:
+1.  **Save Credentials**: The installer will output your Admin URL and auto-generated password. **Copy these immediately!**
+2.  **Verify Services**: Check if everything is running:
+    ```bash
+    shm-manage system-info
+    ```
+3.  **Access Panel**: Navigate to `https://panel.yourdomain.com` and log in with the provided credentials.
+
+### 5. Essential Management Commands
+SHM Panel comes with a powerful CLI tool `/usr/local/bin/shm-manage`:
+
+- `shm-manage get-stats`: View server resource usage.
+- `shm-manage service-status nginx`: Check status of Nginx.
+- `shm-manage backup create [username]`: Create a manual backup for a user.
+- `shm-manage troubleshoot fix-perms [domain_id]`: Repair common permission issues.
 
 ---
 

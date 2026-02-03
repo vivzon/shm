@@ -31,4 +31,9 @@ class Domain
     {
         return Database::fetch("SELECT id FROM domains WHERE domain = ?", [$domain]);
     }
+
+    public static function existsForClient($domain, $clientId)
+    {
+        return Database::fetch("SELECT id FROM domains WHERE domain = ? AND client_id = ?", [$domain, $clientId]);
+    }
 }
