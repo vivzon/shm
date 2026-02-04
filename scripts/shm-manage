@@ -1,0 +1,74 @@
+#!/bin/bash
+
+# SHM Core Management Script
+# This script is the entry point for all SHM server operations.
+
+SHM_BASE="/usr/local/shm"
+SCRIPTS_DIR="$SHM_BASE/scripts"
+LOG_FILE="/var/log/shm-manage.log"
+
+# Security: Ensure script is run as root
+if [ "$EUID" -ne 0 ]; then
+  echo "Please run as root"
+  exit 1
+fi
+
+log() {
+    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $1" >> $LOG_FILE
+}
+
+usage() {
+    echo "Usage: shm-manage <command> [args]"
+    echo ""
+    echo "Commands:"
+    echo "  user-create <username> <password> <email>"
+    echo "  user-delete <username>"
+    echo "  site-create <username> <domain>"
+    echo "  site-delete <username> <domain>"
+    echo "  db-create <username> <dbname> <dbuser> <dbpass>"
+    echo "  ssl-issue <domain>"
+    echo "  email-create <domain> <user> <pass> <quota>"
+    echo "  dns-manage <add|remove> <domain>"
+    echo "  backup-create <username> <backup_dir>"
+    echo "  cron-manage <username> <list|add|remove> [args]"
+    echo "  service-restart <service_name>"
+    exit 1
+}
+
+if [ $# -lt 1 ]; then
+    usage
+fi
+
+COMMAND=$1
+shift
+
+case "$COMMAND" in
+    user-create)
+        "$SCRIPTS_DIR/shm-user-create.sh" "$@"
+        ;;
+    site-create)
+        "$SCRIPTS_DIR/shm-site-create.sh" "$@"
+        ;;
+    db-create)
+        "$SCRIPTS_DIR/shm-db-create.sh" "$@"
+        ;;
+    ssl-issue)
+        "$SCRIPTS_DIR/shm-ssl-issue.sh" "$@"
+        ;;
+    email-create)
+        "$SCRIPTS_DIR/shm-email-create.sh" "$@"
+        ;;
+    dns-manage)
+        "$SCRIPTS_DIR/shm-dns-manager.sh" "$@"
+        ;;
+    backup-create)
+        "$SCRIPTS_DIR/shm-backup.sh" "$@"
+        ;;
+    cron-manage)
+        "$SCRIPTS_DIR/shm-cron-manager.sh" "$@"
+        ;;
+    *)
+        echo "Unknown command: $COMMAND"
+        usage
+        ;;
+esac
