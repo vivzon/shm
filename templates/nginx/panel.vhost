@@ -1,0 +1,23 @@
+server {
+    listen 80;
+    server_name {{PANEL_DOMAIN}};
+    root {{PANEL_PATH}}/public;
+
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php{{PHP_VERSION}}-fpm-shm-panel.sock;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+
+    error_log /var/log/nginx/shm-panel-error.log;
+    access_log /var/log/nginx/shm-panel-access.log;
+}
